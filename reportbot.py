@@ -297,7 +297,9 @@ def generate_pdf_report(params: dict) -> bytes:
     return pdf
 
 def send_report_to_telegram(pdf_file, report_title: str, chat_id: int, context: CallbackContext):
-    context.bot.send_document(chat_id=chat_id, document=pdf_file, caption=f"📄 {report_title}")
+    pdf_buffer = BytesIO(pdf_file)
+    pdf_buffer.name = "report.pdf"  # Встановлюємо ім'я файлу з розширенням .pdf
+    context.bot.send_document(chat_id=chat_id, document=pdf_buffer, caption=f"📄 {report_title}")
     logger.info(f"Sent report to {chat_id}: {report_title}")
 
 def generate_report_from_params(params: dict, chat_id: int, context: CallbackContext):
