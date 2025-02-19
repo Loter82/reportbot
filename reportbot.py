@@ -55,6 +55,9 @@ def get_spreadsheet():
     return gc.open_by_key(SPREADSHEET_ID)
 
 def is_user_allowed(chat_id):
+    """
+    Перевіряє, чи має користувач дозвіл на формування звітів (наприклад, якщо в USERS є відмітка REPORT).
+    """
     try:
         ss = get_spreadsheet()
         users_sheet = ss.worksheet("USERS")
@@ -216,7 +219,8 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
         kind_subtotals[kind] = {"weight": subtotal_weight, "sum": subtotal_sum}
     sorted_kinds = sorted(kind_subtotals.items(), key=lambda x: x[1]["sum"], reverse=True)
     for kind, subtotal in sorted_kinds:
-        table_data.append([f"🎯 {kind}", "", "", ""])
+        # Прибираємо емодзі, просто пишемо "Вид:" чи як вам зручно
+        table_data.append([f"Вид: {kind}", "", "", ""])
         materials = grouped[kind]
         sorted_materials = sorted(materials.items(), key=lambda x: x[1]["sum"], reverse=True)
         for material, vals in sorted_materials:
@@ -224,7 +228,7 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
             sum_val = vals["sum"]
             avg = sum_val / weight if weight != 0 else 0
             table_data.append([material, f"{weight:.2f}", f"{sum_val:.2f}", f"{avg:.2f}"])
-        table_data.append([f"   └─ Підсумок ({kind}):", f"{subtotal['weight']:.2f}", f"{subtotal['sum']:.2f}", ""])
+        table_data.append([f"   Підсумок ({kind}):", f"{subtotal['weight']:.2f}", f"{subtotal['sum']:.2f}", ""])
         overall_weight += subtotal["weight"]
         overall_sum += subtotal["sum"]
     table_data.append(["**Загальний підсумок:**", f"{overall_weight:.2f}", f"{overall_sum:.2f}", ""])
@@ -232,8 +236,8 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
 
 def generate_pdf_report(params: dict) -> bytes:
     """
-    Генерує PDF‑звіт, використовуючи шрифт NotoSans із підтримкою (здебільшого) кирилиці та розширеного набору символів.
-    Не забудьте додати файл 'NotoSans-Regular.ttf' у папку 'fonts/' вашого репозиторію.
+    Генерує PDF‑звіт. У цьому варіанті прибрано всі емодзі/спецсимволи з тексту PDF.
+    Переконайтеся, що NotoSans-Regular.ttf або інший шрифт (який містить кирилицю) є у папці 'fonts/'.
     """
     # Спроба парсингу дат
     try:
@@ -260,16 +264,17 @@ def generate_pdf_report(params: dict) -> bytes:
     else:
         startString = start_date.strftime("%Y-%m-%d")
         endString = end_date.strftime("%Y-%m-%d")
-        docTitle = f"📊 Звіт: {locationText} | {startString} - {endString}"
+        # Прибираємо емодзі "📊"
+        docTitle = f"Звіт: {locationText} | {startString} - {endString}"
 
-    # Реєстрація шрифту NotoSans
+    # Реєстрація шрифту (можна NotoSans, DejaVuSans тощо)
     pdfmetrics.registerFont(TTFont("NotoSans", "fonts/NotoSans-Regular.ttf"))
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
 
-    # Застосовуємо шрифт NotoSans до стандартних стилів
+    # Застосовуємо шрифт до стандартних стилів
     styles["Normal"].fontName = "NotoSans"
     styles["Title"].fontName = "NotoSans"
     styles["Heading1"].fontName = "NotoSans"
@@ -283,20 +288,24 @@ def generate_pdf_report(params: dict) -> bytes:
     story.append(Spacer(1, 12))
     
     # Типи операцій
-    op_types = [("КУПІВЛЯ", "Куплені матеріали"),
-                ("ПРОДАЖ", "Продані матеріали"),
-                ("ВІДВАНТАЖЕННЯ", "Відвантажені матеріали")]
+    op_types = [
+        ("КУПІВЛЯ", "Куплені матеріали"),
+        ("ПРОДАЖ", "Продані матеріали"),
+        ("ВІДВАНТАЖЕННЯ", "Відвантажені матеріали")
+    ]
     
     material_mapping = get_material_mapping()
     
     # Генеруємо таблиці по кожному типу операцій
     for op_code, op_title in op_types:
-        story.append(Paragraph(f"✏️ {op_title}", styles["Heading2"]))
+        # Прибрали емодзі "✏️"
+        story.append(Paragraph(op_title, styles["Heading2"]))
         story.append(Spacer(1, 6))
         
         aggregated_data = process_journal(op_code, start_date, end_date, params.get("location"))
         if not aggregated_data:
-            story.append(Paragraph(f"❌ Немає даних для {op_title}", styles["Normal"]))
+            # Прибрали "❌"
+            story.append(Paragraph(f"Немає даних для {op_title}", styles["Normal"]))
             story.append(Spacer(1, 12))
             continue
         
@@ -325,10 +334,11 @@ def send_report_to_telegram(pdf_file, report_title: str, chat_id: int, context: 
     """
     Відправляємо PDF у Telegram з правильним іменем файлу, щоб
     Telegram розпізнавав його як PDF (application/pdf).
+    Прибрали емодзі "📄" із заголовку в повідомленні.
     """
     pdf_buffer = BytesIO(pdf_file)
     pdf_buffer.name = "report.pdf"
-    context.bot.send_document(chat_id=chat_id, document=pdf_buffer, caption=f"📄 {report_title}")
+    context.bot.send_document(chat_id=chat_id, document=pdf_buffer, caption=f"{report_title}")
     logger.info(f"Sent report to {chat_id}: {report_title}")
 
 def generate_report_from_params(params: dict, chat_id: int, context: CallbackContext):
