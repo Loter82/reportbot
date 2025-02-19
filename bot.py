@@ -17,22 +17,28 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Змінні середовища
+# Змінні оточення
 BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Наприклад, "7259566463:..."
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")  # ID вашої Google таблиці
-SERVICE_ACCOUNT_FILE = os.environ.get("SERVICE_ACCOUNT_FILE")  # Шлях до файлу credentials.json
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")  # ID Google таблиці
+SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")  # JSON-рядок з креденціалами
 
 # Розмовні стани
-CHOOSING_LOCATION, CHOOSING_VIEW, CHOOSING_PERIOD, ENTERING_CUSTOM_DATES = range(4)
+(CHOOSING_LOCATION, CHOOSING_VIEW, CHOOSING_PERIOD, ENTERING_CUSTOM_DATES) = range(4)
 
-# Глобальний словник для зберігання стану користувача (для простоти)
+# Глобальний словник для зберігання стану користувача (просте рішення)
 user_states = {}
 
 # --- Функції для роботи з Google Таблицею ---
 def get_spreadsheet():
     scopes = ['https://www.googleapis.com/auth/spreadsheets',
               'https://www.googleapis.com/auth/drive']
-    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+    # Використовуємо креденціали з рядка JSON із SERVICE_ACCOUNT_JSON
+    try:
+        service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
+    except Exception as e:
+        logger.error("Error parsing SERVICE_ACCOUNT_JSON: " + str(e))
+        raise
+    creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
     gc = gspread.authorize(creds)
     return gc.open_by_key(SPREADSHEET_ID)
 
@@ -41,9 +47,12 @@ def is_user_allowed(chat_id):
         ss = get_spreadsheet()
         users_sheet = ss.worksheet("USERS")
         data = users_sheet.get_all_values()
-        # Припускаємо, що перший рядок – заголовок. Telegram ID у колонці C (індекс 2), дозвіл "REPORT" у колонці G (індекс 6)
+        # Припускаємо: колонка C (індекс 2) – Telegram ID, колонка G (індекс 6) має містити "REPORT"
         for row in data[1:]:
-            if row[2].strip() == str(chat_id) and row[6].strip().upper() == "REPORT":
+            user_id = row[2].strip() if row[2] else ""
+            permission = row[6].strip().upper() if row[6] else ""
+            logger.info(f"USERS row: user_id={user_id}, permission={permission}")
+            if user_id == str(chat_id) and permission == "REPORT":
                 logger.info(f"User {chat_id} is allowed.")
                 return True
     except Exception as e:
@@ -92,7 +101,6 @@ def report_command(update: Update, context: CallbackContext) -> int:
     if not is_user_allowed(chat_id):
         update.message.reply_text("Вибачте, у вас немає доступу до генерації звітів.")
         return ConversationHandler.END
-    # Запит вибору точки
     keyboard = [
         [InlineKeyboardButton("Загальний", callback_data="choose_location:Загальний")],
         [InlineKeyboardButton("ІРПІНЬ", callback_data="choose_location:ІРПІНЬ")],
@@ -181,21 +189,22 @@ def cancel(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("Операцію скасовано.")
     return ConversationHandler.END
 
-# Dummy функція генерації звіту. Замість цього блоку інтегруйте свою логіку читання даних та генерації PDF.
+# Dummy генерація звіту – тут треба інтегрувати вашу логіку для генерації PDF зі звітами
 def generate_report_from_params(params: dict, chat_id: int, context: CallbackContext):
     logger.info(f"Generating report for chat {chat_id} with params: {json.dumps(params)}")
-    time.sleep(2)  # Імітація затримки генерації звіту
-    dummy_pdf = b"Dummy PDF content"  # Замість цього використовуйте реальний PDF (байти файлу)
+    # Тут додайте вашу логіку для формування звіту з даних Google Sheets
+    time.sleep(2)  # Імітація затримки генерації
+    dummy_pdf = b"Dummy PDF content"  # Замініть на реальний PDF (байти файлу)
     send_report_to_telegram(dummy_pdf, "Звіт (симуляція)", chat_id, context)
 
 def send_report_to_telegram(pdf_file, report_title: str, chat_id: int, context: CallbackContext):
     context.bot.send_document(chat_id=chat_id, document=pdf_file, caption=f"📄 {report_title}")
     logger.info(f"Sent report to {chat_id}: {report_title}")
 
-def main():
+def start_polling():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
-    
+
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("report", report_command)],
         states={
@@ -206,13 +215,13 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
-    
+
     dp.add_handler(CommandHandler("start", start_command))
     dp.add_handler(conv_handler)
-    
+
     updater.start_polling()
     logger.info("Bot started. Listening for commands...")
     updater.idle()
 
 if __name__ == '__main__':
-    main()
+    start_polling()
