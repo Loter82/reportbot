@@ -232,8 +232,8 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
 
 def generate_pdf_report(params: dict) -> bytes:
     """
-    Генерує PDF‑звіт, використовуючи шрифт DejaVuSans із підтримкою кирилиці.
-    Не забудьте додати файл 'DejaVuSans.ttf' у ваш репозиторій (наприклад, у папку 'fonts/').
+    Генерує PDF‑звіт, використовуючи шрифт NotoSans із підтримкою (здебільшого) кирилиці та розширеного набору символів.
+    Не забудьте додати файл 'NotoSans-Regular.ttf' у папку 'fonts/' вашого репозиторію.
     """
     # Спроба парсингу дат
     try:
@@ -262,18 +262,18 @@ def generate_pdf_report(params: dict) -> bytes:
         endString = end_date.strftime("%Y-%m-%d")
         docTitle = f"📊 Звіт: {locationText} | {startString} - {endString}"
 
-    # Реєстрація шрифту DejaVuSans
-    pdfmetrics.registerFont(TTFont("DejaVuSans", "fonts/DejaVuSans.ttf"))
+    # Реєстрація шрифту NotoSans
+    pdfmetrics.registerFont(TTFont("NotoSans", "fonts/NotoSans-Regular.ttf"))
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
 
-    # Застосовуємо шрифт DejaVuSans до стандартних стилів
-    styles["Normal"].fontName = "DejaVuSans"
-    styles["Title"].fontName = "DejaVuSans"
-    styles["Heading1"].fontName = "DejaVuSans"
-    styles["Heading2"].fontName = "DejaVuSans"
+    # Застосовуємо шрифт NotoSans до стандартних стилів
+    styles["Normal"].fontName = "NotoSans"
+    styles["Title"].fontName = "NotoSans"
+    styles["Heading1"].fontName = "NotoSans"
+    styles["Heading2"].fontName = "NotoSans"
 
     story = []
     
@@ -310,7 +310,7 @@ def generate_pdf_report(params: dict) -> bytes:
             ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans'),  # Заголовок таблиці
+            ('FONTNAME', (0, 0), (-1, 0), 'NotoSans'),  # Заголовок таблиці
         ])
         table.setStyle(table_style)
         story.append(table)
