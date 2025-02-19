@@ -18,21 +18,25 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Змінні оточення
-BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Наприклад, "7259566463:..."
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")  # ID Google таблиці
-SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")  # JSON-рядок з креденціалами
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
+SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
+
+if not SERVICE_ACCOUNT_JSON:
+    logger.error("SERVICE_ACCOUNT_JSON is not set in environment variables!")
+    # Можна завершити виконання, якщо креденціали відсутні
+    raise ValueError("SERVICE_ACCOUNT_JSON environment variable is missing.")
 
 # Розмовні стани
 (CHOOSING_LOCATION, CHOOSING_VIEW, CHOOSING_PERIOD, ENTERING_CUSTOM_DATES) = range(4)
 
-# Глобальний словник для зберігання стану користувача (просте рішення)
+# Глобальний словник для зберігання стану користувачів
 user_states = {}
 
 # --- Функції для роботи з Google Таблицею ---
 def get_spreadsheet():
     scopes = ['https://www.googleapis.com/auth/spreadsheets',
               'https://www.googleapis.com/auth/drive']
-    # Використовуємо креденціали з рядка JSON із SERVICE_ACCOUNT_JSON
     try:
         service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
     except Exception as e:
@@ -47,7 +51,6 @@ def is_user_allowed(chat_id):
         ss = get_spreadsheet()
         users_sheet = ss.worksheet("USERS")
         data = users_sheet.get_all_values()
-        # Припускаємо: колонка C (індекс 2) – Telegram ID, колонка G (індекс 6) має містити "REPORT"
         for row in data[1:]:
             user_id = row[2].strip() if row[2] else ""
             permission = row[6].strip().upper() if row[6] else ""
@@ -55,9 +58,9 @@ def is_user_allowed(chat_id):
             if user_id == str(chat_id) and permission == "REPORT":
                 logger.info(f"User {chat_id} is allowed.")
                 return True
+        logger.info(f"User {chat_id} is not allowed.")
     except Exception as e:
         logger.error("Error in is_user_allowed: " + str(e))
-    logger.info(f"User {chat_id} is not allowed.")
     return False
 
 def set_state(chat_id, state):
@@ -189,19 +192,18 @@ def cancel(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("Операцію скасовано.")
     return ConversationHandler.END
 
-# Dummy генерація звіту – тут треба інтегрувати вашу логіку для генерації PDF зі звітами
+# Dummy функція генерації звіту – замініть на свою логіку генерації PDF із даних Google Sheets
 def generate_report_from_params(params: dict, chat_id: int, context: CallbackContext):
     logger.info(f"Generating report for chat {chat_id} with params: {json.dumps(params)}")
-    # Тут додайте вашу логіку для формування звіту з даних Google Sheets
-    time.sleep(2)  # Імітація затримки генерації
-    dummy_pdf = b"Dummy PDF content"  # Замініть на реальний PDF (байти файлу)
+    time.sleep(2)  # Імітуємо затримку генерації звіту
+    dummy_pdf = b"Dummy PDF content"  # Тут повинен бути реальний PDF (байти файлу)
     send_report_to_telegram(dummy_pdf, "Звіт (симуляція)", chat_id, context)
 
 def send_report_to_telegram(pdf_file, report_title: str, chat_id: int, context: CallbackContext):
     context.bot.send_document(chat_id=chat_id, document=pdf_file, caption=f"📄 {report_title}")
     logger.info(f"Sent report to {chat_id}: {report_title}")
 
-def start_polling():
+def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
@@ -224,4 +226,4 @@ def start_polling():
     updater.idle()
 
 if __name__ == '__main__':
-    start_polling()
+    main()
