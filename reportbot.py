@@ -263,7 +263,7 @@ def generate_pdf_report(params: dict) -> bytes:
         docTitle = f"📊 Звіт: {locationText} | {startString} - {endString}"
 
     # Реєстрація шрифту DejaVuSans
-    pdfmetrics.registerFont(TTFont("DejaVuSans", "/DejaVuSans.ttf"))
+    pdfmetrics.registerFont(TTFont("DejaVuSans", "fonts/DejaVuSans.ttf"))
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
