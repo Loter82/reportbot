@@ -14,6 +14,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Updater, CommandHandler, CallbackQueryHandler,
@@ -123,7 +125,8 @@ def get_material_mapping():
         for row in data[1:]:
             if row and row[0]:
                 material = row[0].strip()
-                kind = row[2].strip() if len(row) > 2 and row[2] else "Інше"
+                # Видаляємо нерозривні пробіли, якщо є
+                kind = row[2].replace('\xa0', '').strip() if len(row) > 2 and row[2] else "Інше"
                 mapping[material] = kind
         return mapping
     except Exception as e:
@@ -131,20 +134,17 @@ def get_material_mapping():
         return {}
 
 def process_journal(operation_type: str, start_date: datetime.date, end_date: datetime.date, selected_location: str):
+    """
+    Збирає дані з аркуша JOURNAL за заданим типом операції, датами та локацією.
+    """
     try:
         ss = get_spreadsheet()
         journal_sheet = ss.worksheet("JOURNAL")
         data = journal_sheet.get_all_values()
         result = {}
-        # Припускаємо:
-        # - Дата знаходиться у стовпці B (індекс 1)
-        # - Тип операції – у стовпці E (індекс 4)
-        # - Локація – у стовпці K (індекс 10)
-        # - Матеріал – у стовпці D (індекс 3)
-        # - Вага – у стовпці F (індекс 5)
-        # - Сума – у стовпці J (індекс 9)
         for row in data[1:]:
             try:
+                # Парсимо дату з різних форматів
                 row_date = None
                 for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
                     try:
@@ -160,9 +160,14 @@ def process_journal(operation_type: str, start_date: datetime.date, end_date: da
                     continue
                 if selected_location and row[10].strip() != selected_location:
                     continue
+
                 material = row[3].strip()
-                weight = float(row[5].replace('\xa0', '').replace(",", ".").strip()) if row[5] else 0
-                sum_val = float(row[9].replace('\xa0', '').replace(",", ".").strip()) if row[9] else 0
+                # Видаляємо нерозривні пробіли (\xa0) і замінюємо кому на крапку
+                weight_str = row[5].replace('\xa0', '').replace(",", ".").strip() if row[5] else "0"
+                sum_str = row[9].replace('\xa0', '').replace(",", ".").strip() if row[9] else "0"
+                weight = float(weight_str)
+                sum_val = float(sum_str)
+
                 if material not in result:
                     result[material] = {"weight": 0, "sum": 0}
                 result[material]["weight"] += weight
@@ -226,6 +231,11 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
     return table_data
 
 def generate_pdf_report(params: dict) -> bytes:
+    """
+    Генерує PDF‑звіт, використовуючи шрифт DejaVuSans із підтримкою кирилиці.
+    Не забудьте додати файл 'DejaVuSans.ttf' у ваш репозиторій (наприклад, у папку 'fonts/').
+    """
+    # Спроба парсингу дат
     try:
         start_date = datetime.datetime.strptime(params["startDate"], "%d.%m.%Y").date()
         end_date = datetime.datetime.strptime(params["endDate"], "%d.%m.%Y").date()
@@ -233,12 +243,14 @@ def generate_pdf_report(params: dict) -> bytes:
         logger.error("Error parsing dates: " + str(e))
         start_date = end_date = datetime.date.today()
 
+    # Перевірка, чи весь місяць
     full_month = False
     if start_date.day == 1:
         last_day = calendar.monthrange(start_date.year, start_date.month)[1]
         if end_date.day == last_day and start_date.month == end_date.month and start_date.year == end_date.year:
             full_month = True
 
+    # Формуємо заголовок
     locationText = params.get("location") if params.get("location") else "Загальний"
     if full_month:
         monthNames = ["січень", "лютий", "березень", "квітень", "травень", "червень",
@@ -250,21 +262,34 @@ def generate_pdf_report(params: dict) -> bytes:
         endString = end_date.strftime("%Y-%m-%d")
         docTitle = f"📊 Звіт: {locationText} | {startString} - {endString}"
 
+    # Реєстрація шрифту DejaVuSans
+    pdfmetrics.registerFont(TTFont("DejaVuSans", "fonts/DejaVuSans.ttf"))
+
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
+
+    # Застосовуємо шрифт DejaVuSans до стандартних стилів
+    styles["Normal"].fontName = "DejaVuSans"
+    styles["Title"].fontName = "DejaVuSans"
+    styles["Heading1"].fontName = "DejaVuSans"
+    styles["Heading2"].fontName = "DejaVuSans"
+
     story = []
     
+    # Заголовок
     title_paragraph = Paragraph(docTitle, styles["Title"])
     story.append(title_paragraph)
     story.append(Spacer(1, 12))
     
+    # Типи операцій
     op_types = [("КУПІВЛЯ", "Куплені матеріали"),
                 ("ПРОДАЖ", "Продані матеріали"),
                 ("ВІДВАНТАЖЕННЯ", "Відвантажені матеріали")]
     
     material_mapping = get_material_mapping()
     
+    # Генеруємо таблиці по кожному типу операцій
     for op_code, op_title in op_types:
         story.append(Paragraph(f"✏️ {op_title}", styles["Heading2"]))
         story.append(Spacer(1, 6))
@@ -285,7 +310,7 @@ def generate_pdf_report(params: dict) -> bytes:
             ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans'),  # Заголовок таблиці
         ])
         table.setStyle(table_style)
         story.append(table)
@@ -297,8 +322,12 @@ def generate_pdf_report(params: dict) -> bytes:
     return pdf
 
 def send_report_to_telegram(pdf_file, report_title: str, chat_id: int, context: CallbackContext):
+    """
+    Відправляємо PDF у Telegram з правильним іменем файлу, щоб
+    Telegram розпізнавав його як PDF (application/pdf).
+    """
     pdf_buffer = BytesIO(pdf_file)
-    pdf_buffer.name = "report.pdf"  # Встановлюємо ім'я файлу з розширенням .pdf
+    pdf_buffer.name = "report.pdf"
     context.bot.send_document(chat_id=chat_id, document=pdf_buffer, caption=f"📄 {report_title}")
     logger.info(f"Sent report to {chat_id}: {report_title}")
 
@@ -319,12 +348,13 @@ def report_command(update: Update, context: CallbackContext) -> int:
         update.message.reply_text("Вибачте, у вас немає доступу до генерації звітів.")
         return ConversationHandler.END
     
-    # Отримуємо локації з аркуша SHOPS та додаємо кнопку "ЗАГАЛЬНИЙ ЗВІТ"
+    # Отримуємо локації з аркуша SHOPS
     locations = get_locations()
     keyboard = []
     if locations:
         for loc in locations:
             keyboard.append([InlineKeyboardButton(loc, callback_data=f"choose_location:{loc}")])
+    # Додаємо кнопку "ЗАГАЛЬНИЙ ЗВІТ"
     keyboard.append([InlineKeyboardButton("ЗАГАЛЬНИЙ ЗВІТ", callback_data="choose_location:ЗАГАЛЬНИЙ ЗВІТ")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -338,7 +368,7 @@ def choose_location_callback(update: Update, context: CallbackContext) -> int:
     _, location = query.data.split(":", 1)
     chat_id = query.message.chat.id
     state = get_state(chat_id) or {}
-    # Якщо обрана кнопка "ЗАГАЛЬНИЙ ЗВІТ", встановлюємо порожній рядок для локації
+    # Якщо обрано "ЗАГАЛЬНИЙ ЗВІТ", ставимо location = ""
     if location == "ЗАГАЛЬНИЙ ЗВІТ":
         state["location"] = ""
     else:
