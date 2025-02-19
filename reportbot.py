@@ -3,10 +3,17 @@ import os
 import json
 import time
 import datetime
+import calendar
 import logging
 
 import gspread
 from google.oauth2.service_account import Credentials
+
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Updater, CommandHandler, CallbackQueryHandler,
@@ -24,7 +31,6 @@ SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
 
 if not SERVICE_ACCOUNT_JSON:
     logger.error("SERVICE_ACCOUNT_JSON is not set in environment variables!")
-    # Можна завершити виконання, якщо креденціали відсутні
     raise ValueError("SERVICE_ACCOUNT_JSON environment variable is missing.")
 
 # Розмовні стани
@@ -92,6 +98,222 @@ def compute_standard_period(period: str):
         start = today
         end = today
     return {"start": start.strftime("%d.%m.%Y"), "end": end.strftime("%d.%m.%Y")}
+
+# --- Функції для генерації звіту ---
+
+def get_material_mapping():
+    """Отримує мапу матеріалів (тип сировини -> вид) з аркуша 'МАТЕРІАЛИ'."""
+    try:
+        ss = get_spreadsheet()
+        mat_sheet = ss.worksheet("МАТЕРІАЛИ")
+        data = mat_sheet.get_all_values()
+        mapping = {}
+        for row in data[1:]:
+            if row and row[0]:
+                material = row[0].strip()
+                kind = row[2].strip() if len(row) > 2 and row[2] else "Інше"
+                mapping[material] = kind
+        return mapping
+    except Exception as e:
+        logger.error("Error in get_material_mapping: " + str(e))
+        return {}
+
+def process_journal(operation_type: str, start_date: datetime.date, end_date: datetime.date, selected_location: str):
+    """
+    Обробляє дані з аркуша 'ЖУРНАЛ' за заданим типом операції,
+    діапазоном дат та (опціонально) локацією.
+    """
+    try:
+        ss = get_spreadsheet()
+        journal_sheet = ss.worksheet("JOURNAL")
+        data = journal_sheet.get_all_values()
+        result = {}
+        # Припускаємо, що:
+        # - Дата знаходиться у стовпці B (індекс 1)
+        # - Тип операції – у стовпці E (індекс 4)
+        # - Локація – у стовпці K (індекс 10)
+        # - Матеріал – у стовпці D (індекс 3)
+        # - Вага – у стовпці F (індекс 5)
+        # - Сума – у стовпці J (індекс 9)
+        for row in data[1:]:
+            try:
+                # Спробуємо розпізнати дату з різних форматів
+                row_date = None
+                for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+                    try:
+                        row_date = datetime.datetime.strptime(row[1].strip(), fmt).date()
+                        break
+                    except Exception:
+                        continue
+                if not row_date:
+                    continue
+                if not (start_date <= row_date <= end_date):
+                    continue
+                if row[4].strip() != operation_type:
+                    continue
+                if selected_location and row[10].strip() != selected_location:
+                    continue
+                material = row[3].strip()
+                weight = float(row[5].replace(",", ".").strip()) if row[5] else 0
+                sum_val = float(row[9].replace(",", ".").strip()) if row[9] else 0
+                if material not in result:
+                    result[material] = {"weight": 0, "sum": 0}
+                result[material]["weight"] += weight
+                result[material]["sum"] += sum_val
+            except Exception as e:
+                logger.error("Error processing row in JOURNAL: " + str(e))
+                continue
+        return result
+    except Exception as e:
+        logger.error("Error in process_journal: " + str(e))
+        return {}
+
+def generate_brief_table_data(aggregated_data: dict, material_mapping: dict):
+    """
+    Формує дані таблиці для стислого режиму: групування за видом із підсумковими значеннями.
+    """
+    grouped = {}
+    for material, values in aggregated_data.items():
+        kind = material_mapping.get(material, "Інше")
+        if kind not in grouped:
+            grouped[kind] = {"weight": 0, "sum": 0}
+        grouped[kind]["weight"] += values["weight"]
+        grouped[kind]["sum"] += values["sum"]
+    table_data = [["Вид", "Вага (кг)", "Сума"]]
+    overall_weight = 0
+    overall_sum = 0
+    sorted_kinds = sorted(grouped.items(), key=lambda x: x[1]["sum"], reverse=True)
+    for kind, vals in sorted_kinds:
+        overall_weight += vals["weight"]
+        overall_sum += vals["sum"]
+        table_data.append([kind, f"{vals['weight']:.2f}", f"{vals['sum']:.2f}"])
+    table_data.append(["**Загальний підсумок:**", f"{overall_weight:.2f}", f"{overall_sum:.2f}"])
+    return table_data
+
+def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
+    """
+    Формує дані таблиці для розгорнутого режиму: детальний перелік по кожному виду
+    з матеріалами, їхніми показниками та підсумками.
+    """
+    grouped = {}
+    for material, values in aggregated_data.items():
+        kind = material_mapping.get(material, "Інше")
+        if kind not in grouped:
+            grouped[kind] = {}
+        grouped[kind][material] = values
+    table_data = [["Тип сировини", "Вага (кг)", "Сума", "Середня ціна за кг"]]
+    overall_weight = 0
+    overall_sum = 0
+    kind_subtotals = {}
+    for kind, materials in grouped.items():
+        subtotal_weight = sum(v["weight"] for v in materials.values())
+        subtotal_sum = sum(v["sum"] for v in materials.values())
+        kind_subtotals[kind] = {"weight": subtotal_weight, "sum": subtotal_sum}
+    sorted_kinds = sorted(kind_subtotals.items(), key=lambda x: x[1]["sum"], reverse=True)
+    for kind, subtotal in sorted_kinds:
+        table_data.append([f"🎯 {kind}", "", "", ""])
+        materials = grouped[kind]
+        sorted_materials = sorted(materials.items(), key=lambda x: x[1]["sum"], reverse=True)
+        for material, vals in sorted_materials:
+            weight = vals["weight"]
+            sum_val = vals["sum"]
+            avg = sum_val / weight if weight != 0 else 0
+            table_data.append([material, f"{weight:.2f}", f"{sum_val:.2f}", f"{avg:.2f}"])
+        table_data.append([f"   └─ Підсумок ({kind}):", f"{subtotal['weight']:.2f}", f"{subtotal['sum']:.2f}", ""])
+        overall_weight += subtotal["weight"]
+        overall_sum += subtotal["sum"]
+    table_data.append(["**Загальний підсумок:**", f"{overall_weight:.2f}", f"{overall_sum:.2f}", ""])
+    return table_data
+
+def generate_pdf_report(params: dict) -> bytes:
+    """
+    Генерує PDF‑звіт за параметрами, отриманими від користувача через бота.
+    Дані беруться з аркушів "ЖУРНАЛ" та "МАТЕРІАЛИ" із застосуванням логіки,
+    аналогічної до Google Apps Script.
+    """
+    # Парсинг дат із параметрів (формат dd.MM.yyyy)
+    try:
+        start_date = datetime.datetime.strptime(params["startDate"], "%d.%m.%Y").date()
+        end_date = datetime.datetime.strptime(params["endDate"], "%d.%m.%Y").date()
+    except Exception as e:
+        logger.error("Error parsing dates: " + str(e))
+        start_date = end_date = datetime.date.today()
+
+    # Перевірка, чи є період повним календарним місяцем
+    full_month = False
+    if start_date.day == 1:
+        last_day = calendar.monthrange(start_date.year, start_date.month)[1]
+        if end_date.day == last_day and start_date.month == end_date.month and start_date.year == end_date.year:
+            full_month = True
+
+    locationText = params.get("location") if params.get("location") else "Загальний"
+    if full_month:
+        monthNames = ["січень", "лютий", "березень", "квітень", "травень", "червень",
+                      "липень", "серпень", "вересень", "жовтень", "листопад", "грудень"]
+        monthName = monthNames[start_date.month - 1]
+        docTitle = f"Звіт про закупівлі та продажі: {locationText} за {monthName} {start_date.year} року"
+    else:
+        startString = start_date.strftime("%Y-%m-%d")
+        endString = end_date.strftime("%Y-%m-%d")
+        docTitle = f"📊 Звіт: {locationText} | {startString} - {endString}"
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    story = []
+    
+    # Заголовок звіту
+    title_paragraph = Paragraph(docTitle, styles["Title"])
+    story.append(title_paragraph)
+    story.append(Spacer(1, 12))
+    
+    # Операційні типи: "КУПІВЛЯ", "ПРОДАЖ", "ВІДВАНТАЖЕННЯ"
+    op_types = [("КУПІВЛЯ", "Куплені матеріали"),
+                ("ПРОДАЖ", "Продані матеріали"),
+                ("ВІДВАНТАЖЕННЯ", "Відвантажені матеріали")]
+    
+    # Отримання мапи матеріалів
+    material_mapping = get_material_mapping()
+    
+    for op_code, op_title in op_types:
+        story.append(Paragraph(f"✏️ {op_title}", styles["Heading2"]))
+        story.append(Spacer(1, 6))
+        
+        aggregated_data = process_journal(op_code, start_date, end_date, params.get("location"))
+        if not aggregated_data:
+            story.append(Paragraph(f"❌ Немає даних для {op_title}", styles["Normal"]))
+            story.append(Spacer(1, 12))
+            continue
+        
+        if params.get("viewMode") == "СТИСЛИЙ":
+            table_data = generate_brief_table_data(aggregated_data, material_mapping)
+        else:
+            table_data = generate_detailed_table_data(aggregated_data, material_mapping)
+        
+        table = Table(table_data, hAlign="LEFT")
+        table_style = TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ])
+        table.setStyle(table_style)
+        story.append(table)
+        story.append(Spacer(1, 12))
+    
+    doc.build(story)
+    pdf = buffer.getvalue()
+    buffer.close()
+    return pdf
+
+def send_report_to_telegram(pdf_file, report_title: str, chat_id: int, context: CallbackContext):
+    context.bot.send_document(chat_id=chat_id, document=pdf_file, caption=f"📄 {report_title}")
+    logger.info(f"Sent report to {chat_id}: {report_title}")
+
+def generate_report_from_params(params: dict, chat_id: int, context: CallbackContext):
+    logger.info(f"Generating report for chat {chat_id} with params: {json.dumps(params)}")
+    pdf = generate_pdf_report(params)
+    send_report_to_telegram(pdf, "Звіт про рух матеріалів", chat_id, context)
 
 # --- Обробники команд Telegram ---
 def start_command(update: Update, context: CallbackContext) -> int:
@@ -191,17 +413,6 @@ def custom_dates(update: Update, context: CallbackContext) -> int:
 def cancel(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("Операцію скасовано.")
     return ConversationHandler.END
-
-# Dummy функція генерації звіту – замініть на свою логіку генерації PDF із даних Google Sheets
-def generate_report_from_params(params: dict, chat_id: int, context: CallbackContext):
-    logger.info(f"Generating report for chat {chat_id} with params: {json.dumps(params)}")
-    time.sleep(2)  # Імітуємо затримку генерації звіту
-    dummy_pdf = b"Dummy PDF content"  # Тут повинен бути реальний PDF (байти файлу)
-    send_report_to_telegram(dummy_pdf, "Звіт (симуляція)", chat_id, context)
-
-def send_report_to_telegram(pdf_file, report_title: str, chat_id: int, context: CallbackContext):
-    context.bot.send_document(chat_id=chat_id, document=pdf_file, caption=f"📄 {report_title}")
-    logger.info(f"Sent report to {chat_id}: {report_title}")
 
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
