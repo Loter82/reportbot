@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import json
-import time
 import datetime
 import calendar
 import logging
@@ -11,22 +10,21 @@ from google.oauth2.service_account import Credentials
 
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus.tables import TableStyle
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Updater, CommandHandler, CallbackQueryHandler,
                           MessageHandler, Filters, ConversationHandler, CallbackContext)
 
-# Налаштування логування
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Змінні оточення
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
 SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
@@ -35,29 +33,19 @@ if not SERVICE_ACCOUNT_JSON:
     logger.error("SERVICE_ACCOUNT_JSON is not set in environment variables!")
     raise ValueError("SERVICE_ACCOUNT_JSON environment variable is missing.")
 
-# Розмовні стани
 (CHOOSING_LOCATION, CHOOSING_VIEW, CHOOSING_PERIOD, ENTERING_CUSTOM_DATES) = range(4)
 
-# Глобальний словник для зберігання стану користувачів
 user_states = {}
 
-# --- Функції для роботи з Google Таблицею ---
 def get_spreadsheet():
     scopes = ['https://www.googleapis.com/auth/spreadsheets',
               'https://www.googleapis.com/auth/drive']
-    try:
-        service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
-    except Exception as e:
-        logger.error("Error parsing SERVICE_ACCOUNT_JSON: " + str(e))
-        raise
+    service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
     creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
     gc = gspread.authorize(creds)
     return gc.open_by_key(SPREADSHEET_ID)
 
 def is_user_allowed(chat_id):
-    """
-    Перевіряє, чи має користувач дозвіл на формування звітів (наприклад, якщо в USERS є відмітка REPORT).
-    """
     try:
         ss = get_spreadsheet()
         users_sheet = ss.worksheet("USERS")
@@ -65,23 +53,17 @@ def is_user_allowed(chat_id):
         for row in data[1:]:
             user_id = row[2].strip() if row[2] else ""
             permission = row[6].strip().upper() if row[6] else ""
-            logger.info(f"USERS row: user_id={user_id}, permission={permission}")
             if user_id == str(chat_id) and permission == "REPORT":
-                logger.info(f"User {chat_id} is allowed.")
                 return True
-        logger.info(f"User {chat_id} is not allowed.")
     except Exception as e:
         logger.error("Error in is_user_allowed: " + str(e))
     return False
 
 def set_state(chat_id, state):
     user_states[str(chat_id)] = state
-    logger.info(f"State saved for {chat_id}: {state}")
 
 def get_state(chat_id):
-    state = user_states.get(str(chat_id))
-    logger.info(f"State retrieved for {chat_id}: {state}")
-    return state
+    return user_states.get(str(chat_id))
 
 def compute_standard_period(period: str):
     today = datetime.date.today()
@@ -105,20 +87,25 @@ def compute_standard_period(period: str):
     return {"start": start.strftime("%d.%m.%Y"), "end": end.strftime("%d.%m.%Y")}
 
 def get_locations():
-    """
-    Отримує список локацій з вкладки 'SHOPS', стовпець А (починаючи з другого рядка).
-    """
     try:
         ss = get_spreadsheet()
         shops_sheet = ss.worksheet("SHOPS")
         values = shops_sheet.col_values(1)
-        locations = values[1:] if len(values) > 1 else []
-        return locations
+        return values[1:] if len(values) > 1 else []
     except Exception as e:
         logger.error("Error in get_locations: " + str(e))
         return []
 
-# --- Функції для генерації звіту ---
+# ------------------ Логіка формування звіту ------------------
+
+def format_number(num: float) -> str:
+    """
+    Форматує число з двома знаками після коми та тисячними розрядами.
+    Приклад: 1234.56 -> "1 234.56"
+    """
+    s = "{:,.2f}".format(num)  # стандартне форматування: 1,234.56
+    return s.replace(",", " ")  # замінюємо кому на пробіл => 1 234.56
+
 def get_material_mapping():
     try:
         ss = get_spreadsheet()
@@ -129,7 +116,10 @@ def get_material_mapping():
             if row and row[0]:
                 material = row[0].strip()
                 # Видаляємо нерозривні пробіли, якщо є
-                kind = row[2].replace('\xa0', '').strip() if len(row) > 2 and row[2] else "Інше"
+                if len(row) > 2 and row[2]:
+                    kind = row[2].replace('\xa0', '').strip()
+                else:
+                    kind = "Інше"
                 mapping[material] = kind
         return mapping
     except Exception as e:
@@ -137,9 +127,6 @@ def get_material_mapping():
         return {}
 
 def process_journal(operation_type: str, start_date: datetime.date, end_date: datetime.date, selected_location: str):
-    """
-    Збирає дані з аркуша JOURNAL за заданим типом операції, датами та локацією.
-    """
     try:
         ss = get_spreadsheet()
         journal_sheet = ss.worksheet("JOURNAL")
@@ -147,7 +134,6 @@ def process_journal(operation_type: str, start_date: datetime.date, end_date: da
         result = {}
         for row in data[1:]:
             try:
-                # Парсимо дату з різних форматів
                 row_date = None
                 for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
                     try:
@@ -165,7 +151,6 @@ def process_journal(operation_type: str, start_date: datetime.date, end_date: da
                     continue
 
                 material = row[3].strip()
-                # Видаляємо нерозривні пробіли (\xa0) і замінюємо кому на крапку
                 weight_str = row[5].replace('\xa0', '').replace(",", ".").strip() if row[5] else "0"
                 sum_str = row[9].replace('\xa0', '').replace(",", ".").strip() if row[9] else "0"
                 weight = float(weight_str)
@@ -191,15 +176,26 @@ def generate_brief_table_data(aggregated_data: dict, material_mapping: dict):
             grouped[kind] = {"weight": 0, "sum": 0}
         grouped[kind]["weight"] += values["weight"]
         grouped[kind]["sum"] += values["sum"]
+
     table_data = [["Вид", "Вага (кг)", "Сума"]]
     overall_weight = 0
     overall_sum = 0
+
     sorted_kinds = sorted(grouped.items(), key=lambda x: x[1]["sum"], reverse=True)
     for kind, vals in sorted_kinds:
         overall_weight += vals["weight"]
         overall_sum += vals["sum"]
-        table_data.append([kind, f"{vals['weight']:.2f}", f"{vals['sum']:.2f}"])
-    table_data.append(["**Загальний підсумок:**", f"{overall_weight:.2f}", f"{overall_sum:.2f}"])
+        table_data.append([
+            kind,
+            format_number(vals["weight"]),
+            format_number(vals["sum"])
+        ])
+    # Підсумок
+    table_data.append([
+        "**Загальний підсумок:**",
+        format_number(overall_weight),
+        format_number(overall_sum)
+    ])
     return table_data
 
 def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
@@ -209,17 +205,19 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
         if kind not in grouped:
             grouped[kind] = {}
         grouped[kind][material] = values
+
     table_data = [["Тип сировини", "Вага (кг)", "Сума", "Середня ціна за кг"]]
     overall_weight = 0
     overall_sum = 0
+
     kind_subtotals = {}
     for kind, materials in grouped.items():
         subtotal_weight = sum(v["weight"] for v in materials.values())
         subtotal_sum = sum(v["sum"] for v in materials.values())
         kind_subtotals[kind] = {"weight": subtotal_weight, "sum": subtotal_sum}
+
     sorted_kinds = sorted(kind_subtotals.items(), key=lambda x: x[1]["sum"], reverse=True)
     for kind, subtotal in sorted_kinds:
-        # Прибираємо емодзі, просто пишемо "Вид:" чи як вам зручно
         table_data.append([f"Вид: {kind}", "", "", ""])
         materials = grouped[kind]
         sorted_materials = sorted(materials.items(), key=lambda x: x[1]["sum"], reverse=True)
@@ -227,19 +225,51 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
             weight = vals["weight"]
             sum_val = vals["sum"]
             avg = sum_val / weight if weight != 0 else 0
-            table_data.append([material, f"{weight:.2f}", f"{sum_val:.2f}", f"{avg:.2f}"])
-        table_data.append([f"   Підсумок ({kind}):", f"{subtotal['weight']:.2f}", f"{subtotal['sum']:.2f}", ""])
+            table_data.append([
+                material,
+                format_number(weight),
+                format_number(sum_val),
+                format_number(avg)
+            ])
+        # Підсумок по виду
+        table_data.append([
+            f"   Підсумок ({kind}):",
+            format_number(subtotal["weight"]),
+            format_number(subtotal["sum"]),
+            ""
+        ])
         overall_weight += subtotal["weight"]
         overall_sum += subtotal["sum"]
-    table_data.append(["**Загальний підсумок:**", f"{overall_weight:.2f}", f"{overall_sum:.2f}", ""])
+
+    # Загальний підсумок
+    table_data.append([
+        "**Загальний підсумок:**",
+        format_number(overall_weight),
+        format_number(overall_sum),
+        ""
+    ])
     return table_data
 
+def build_table_style(table_data):
+    """
+    Формує стиль таблиці, де всі клітинки відображаються шрифтом NotoSans,
+    а підсумкові рядки (ті, що містять "Загальний підсумок" або "Підсумок (чогось)")
+    виділяються жирним.
+    """
+    style_cmds = [
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+        ('FONTNAME', (0, 0), (-1, -1), 'NotoSans'),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+    ]
+    # Перебираємо всі рядки, шукаємо ключові слова
+    for i, row in enumerate(table_data):
+        if row[0].startswith("**Загальний підсумок:") or row[0].strip().startswith("Підсумок"):
+            # Зробимо жирним
+            style_cmds.append(('FONTNAME', (0, i), (-1, i), 'NotoSans-Bold'))
+    return TableStyle(style_cmds)
+
 def generate_pdf_report(params: dict) -> bytes:
-    """
-    Генерує PDF‑звіт. У цьому варіанті прибрано всі емодзі/спецсимволи з тексту PDF.
-    Переконайтеся, що NotoSans-Regular.ttf або інший шрифт (який містить кирилицю) є у папці 'fonts/'.
-    """
-    # Спроба парсингу дат
     try:
         start_date = datetime.datetime.strptime(params["startDate"], "%d.%m.%Y").date()
         end_date = datetime.datetime.strptime(params["endDate"], "%d.%m.%Y").date()
@@ -247,14 +277,12 @@ def generate_pdf_report(params: dict) -> bytes:
         logger.error("Error parsing dates: " + str(e))
         start_date = end_date = datetime.date.today()
 
-    # Перевірка, чи весь місяць
     full_month = False
     if start_date.day == 1:
         last_day = calendar.monthrange(start_date.year, start_date.month)[1]
         if end_date.day == last_day and start_date.month == end_date.month and start_date.year == end_date.year:
             full_month = True
 
-    # Формуємо заголовок
     locationText = params.get("location") if params.get("location") else "Загальний"
     if full_month:
         monthNames = ["січень", "лютий", "березень", "квітень", "травень", "червень",
@@ -264,91 +292,75 @@ def generate_pdf_report(params: dict) -> bytes:
     else:
         startString = start_date.strftime("%Y-%m-%d")
         endString = end_date.strftime("%Y-%m-%d")
-        # Прибираємо емодзі "📊"
         docTitle = f"Звіт: {locationText} | {startString} - {endString}"
 
-    # Реєстрація шрифту (можна NotoSans, DejaVuSans тощо)
+    # Реєструємо шрифт (NotoSans або DejaVuSans)
     pdfmetrics.registerFont(TTFont("NotoSans", "fonts/NotoSans-Regular.ttf"))
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
 
-    # Застосовуємо шрифт до стандартних стилів
+    # Використовуємо шрифт NotoSans у стилях
     styles["Normal"].fontName = "NotoSans"
     styles["Title"].fontName = "NotoSans"
     styles["Heading1"].fontName = "NotoSans"
     styles["Heading2"].fontName = "NotoSans"
 
     story = []
-    
+
     # Заголовок
     title_paragraph = Paragraph(docTitle, styles["Title"])
     story.append(title_paragraph)
     story.append(Spacer(1, 12))
-    
-    # Типи операцій
+
     op_types = [
         ("КУПІВЛЯ", "Куплені матеріали"),
         ("ПРОДАЖ", "Продані матеріали"),
         ("ВІДВАНТАЖЕННЯ", "Відвантажені матеріали")
     ]
-    
     material_mapping = get_material_mapping()
-    
-    # Генеруємо таблиці по кожному типу операцій
+
     for op_code, op_title in op_types:
-        # Прибрали емодзі "✏️"
         story.append(Paragraph(op_title, styles["Heading2"]))
         story.append(Spacer(1, 6))
-        
+
         aggregated_data = process_journal(op_code, start_date, end_date, params.get("location"))
         if not aggregated_data:
-            # Прибрали "❌"
             story.append(Paragraph(f"Немає даних для {op_title}", styles["Normal"]))
             story.append(Spacer(1, 12))
             continue
-        
+
         if params.get("viewMode") == "СТИСЛИЙ":
             table_data = generate_brief_table_data(aggregated_data, material_mapping)
         else:
             table_data = generate_detailed_table_data(aggregated_data, material_mapping)
-        
+
+        # Формуємо стиль для таблиці
+        table_style = build_table_style(table_data)
         table = Table(table_data, hAlign="LEFT")
-        table_style = TableStyle([
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, -1), 'NotoSans'),  # Заголовок таблиці
-        ])
         table.setStyle(table_style)
+
         story.append(table)
         story.append(Spacer(1, 12))
-    
+
     doc.build(story)
     pdf = buffer.getvalue()
     buffer.close()
     return pdf
 
 def send_report_to_telegram(pdf_file, report_title: str, chat_id: int, context: CallbackContext):
-    """
-    Відправляємо PDF у Telegram з правильним іменем файлу, щоб
-    Telegram розпізнавав його як PDF (application/pdf).
-    Прибрали емодзі "📄" із заголовку в повідомленні.
-    """
     pdf_buffer = BytesIO(pdf_file)
     pdf_buffer.name = "report.pdf"
-    context.bot.send_document(chat_id=chat_id, document=pdf_buffer, caption=f"{report_title}")
-    logger.info(f"Sent report to {chat_id}: {report_title}")
+    context.bot.send_document(chat_id=chat_id, document=pdf_buffer, caption=report_title)
 
 def generate_report_from_params(params: dict, chat_id: int, context: CallbackContext):
-    logger.info(f"Generating report for chat {chat_id} with params: {json.dumps(params)}")
     pdf = generate_pdf_report(params)
     send_report_to_telegram(pdf, "Звіт про рух матеріалів", chat_id, context)
 
-# --- Обробники команд Telegram ---
+# ------------------ Телеграм-логіка ------------------
+
 def start_command(update: Update, context: CallbackContext) -> int:
-    chat_id = update.effective_chat.id
     update.message.reply_text("Вітаємо! Використовуйте команду /report для генерації звіту про рух матеріалів.")
     return ConversationHandler.END
 
@@ -357,16 +369,14 @@ def report_command(update: Update, context: CallbackContext) -> int:
     if not is_user_allowed(chat_id):
         update.message.reply_text("Вибачте, у вас немає доступу до генерації звітів.")
         return ConversationHandler.END
-    
-    # Отримуємо локації з аркуша SHOPS
+
     locations = get_locations()
     keyboard = []
     if locations:
         for loc in locations:
             keyboard.append([InlineKeyboardButton(loc, callback_data=f"choose_location:{loc}")])
-    # Додаємо кнопку "ЗАГАЛЬНИЙ ЗВІТ"
     keyboard.append([InlineKeyboardButton("ЗАГАЛЬНИЙ ЗВІТ", callback_data="choose_location:ЗАГАЛЬНИЙ ЗВІТ")])
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text("Оберіть точку для звіту:", reply_markup=reply_markup)
     set_state(chat_id, {"stage": "choose_location"})
@@ -378,14 +388,13 @@ def choose_location_callback(update: Update, context: CallbackContext) -> int:
     _, location = query.data.split(":", 1)
     chat_id = query.message.chat.id
     state = get_state(chat_id) or {}
-    # Якщо обрано "ЗАГАЛЬНИЙ ЗВІТ", ставимо location = ""
     if location == "ЗАГАЛЬНИЙ ЗВІТ":
         state["location"] = ""
     else:
         state["location"] = location
     state["stage"] = "choose_view"
     set_state(chat_id, state)
-    
+
     keyboard = [
         [InlineKeyboardButton("СТИСЛИЙ", callback_data="choose_view:СТИСЛИЙ")],
         [InlineKeyboardButton("РОЗГОРНУТИЙ", callback_data="choose_view:РОЗГОРНУТИЙ")]
@@ -402,7 +411,7 @@ def choose_view_callback(update: Update, context: CallbackContext) -> int:
     state["viewMode"] = view_mode
     state["stage"] = "choose_period"
     set_state(chat_id, state)
-    
+
     keyboard = [
         [InlineKeyboardButton("Сьогодні", callback_data="choose_period:Сьогодні")],
         [InlineKeyboardButton("Вчора", callback_data="choose_period:Вчора")],
@@ -475,7 +484,6 @@ def main():
     dp.add_handler(conv_handler)
 
     updater.start_polling()
-    logger.info("Bot started. Listening for commands...")
     updater.idle()
 
 if __name__ == '__main__':
