@@ -99,10 +99,22 @@ def compute_standard_period(period: str):
         end = today
     return {"start": start.strftime("%d.%m.%Y"), "end": end.strftime("%d.%m.%Y")}
 
-# --- Функції для генерації звіту ---
+def get_locations():
+    """
+    Отримує список локацій з вкладки 'SHOPS', стовпець А (починаючи з другого рядка).
+    """
+    try:
+        ss = get_spreadsheet()
+        shops_sheet = ss.worksheet("SHOPS")
+        values = shops_sheet.col_values(1)
+        locations = values[1:] if len(values) > 1 else []
+        return locations
+    except Exception as e:
+        logger.error("Error in get_locations: " + str(e))
+        return []
 
+# --- Функції для генерації звіту ---
 def get_material_mapping():
-    """Отримує мапу матеріалів (тип сировини -> вид) з аркуша 'МАТЕРІАЛИ'."""
     try:
         ss = get_spreadsheet()
         mat_sheet = ss.worksheet("МАТЕРІАЛИ")
@@ -119,16 +131,12 @@ def get_material_mapping():
         return {}
 
 def process_journal(operation_type: str, start_date: datetime.date, end_date: datetime.date, selected_location: str):
-    """
-    Обробляє дані з аркуша 'ЖУРНАЛ' за заданим типом операції,
-    діапазоном дат та (опціонально) локацією.
-    """
     try:
         ss = get_spreadsheet()
         journal_sheet = ss.worksheet("JOURNAL")
         data = journal_sheet.get_all_values()
         result = {}
-        # Припускаємо, що:
+        # Припускаємо:
         # - Дата знаходиться у стовпці B (індекс 1)
         # - Тип операції – у стовпці E (індекс 4)
         # - Локація – у стовпці K (індекс 10)
@@ -137,7 +145,6 @@ def process_journal(operation_type: str, start_date: datetime.date, end_date: da
         # - Сума – у стовпці J (індекс 9)
         for row in data[1:]:
             try:
-                # Спробуємо розпізнати дату з різних форматів
                 row_date = None
                 for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
                     try:
@@ -169,9 +176,6 @@ def process_journal(operation_type: str, start_date: datetime.date, end_date: da
         return {}
 
 def generate_brief_table_data(aggregated_data: dict, material_mapping: dict):
-    """
-    Формує дані таблиці для стислого режиму: групування за видом із підсумковими значеннями.
-    """
     grouped = {}
     for material, values in aggregated_data.items():
         kind = material_mapping.get(material, "Інше")
@@ -191,10 +195,6 @@ def generate_brief_table_data(aggregated_data: dict, material_mapping: dict):
     return table_data
 
 def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
-    """
-    Формує дані таблиці для розгорнутого режиму: детальний перелік по кожному виду
-    з матеріалами, їхніми показниками та підсумками.
-    """
     grouped = {}
     for material, values in aggregated_data.items():
         kind = material_mapping.get(material, "Інше")
@@ -226,12 +226,6 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
     return table_data
 
 def generate_pdf_report(params: dict) -> bytes:
-    """
-    Генерує PDF‑звіт за параметрами, отриманими від користувача через бота.
-    Дані беруться з аркушів "ЖУРНАЛ" та "МАТЕРІАЛИ" із застосуванням логіки,
-    аналогічної до Google Apps Script.
-    """
-    # Парсинг дат із параметрів (формат dd.MM.yyyy)
     try:
         start_date = datetime.datetime.strptime(params["startDate"], "%d.%m.%Y").date()
         end_date = datetime.datetime.strptime(params["endDate"], "%d.%m.%Y").date()
@@ -239,7 +233,6 @@ def generate_pdf_report(params: dict) -> bytes:
         logger.error("Error parsing dates: " + str(e))
         start_date = end_date = datetime.date.today()
 
-    # Перевірка, чи є період повним календарним місяцем
     full_month = False
     if start_date.day == 1:
         last_day = calendar.monthrange(start_date.year, start_date.month)[1]
@@ -262,17 +255,14 @@ def generate_pdf_report(params: dict) -> bytes:
     styles = getSampleStyleSheet()
     story = []
     
-    # Заголовок звіту
     title_paragraph = Paragraph(docTitle, styles["Title"])
     story.append(title_paragraph)
     story.append(Spacer(1, 12))
     
-    # Операційні типи: "КУПІВЛЯ", "ПРОДАЖ", "ВІДВАНТАЖЕННЯ"
     op_types = [("КУПІВЛЯ", "Куплені матеріали"),
                 ("ПРОДАЖ", "Продані матеріали"),
                 ("ВІДВАНТАЖЕННЯ", "Відвантажені матеріали")]
     
-    # Отримання мапи матеріалів
     material_mapping = get_material_mapping()
     
     for op_code, op_title in op_types:
@@ -326,11 +316,15 @@ def report_command(update: Update, context: CallbackContext) -> int:
     if not is_user_allowed(chat_id):
         update.message.reply_text("Вибачте, у вас немає доступу до генерації звітів.")
         return ConversationHandler.END
-    keyboard = [
-        [InlineKeyboardButton("Загальний", callback_data="choose_location:Загальний")],
-        [InlineKeyboardButton("ІРПІНЬ", callback_data="choose_location:ІРПІНЬ")],
-        [InlineKeyboardButton("ГОСТОМЕЛЬ", callback_data="choose_location:ГОСТОМЕЛЬ")]
-    ]
+    
+    # Отримуємо локації з аркуша SHOPS та додаємо кнопку "ЗАГАЛЬНИЙ ЗВІТ"
+    locations = get_locations()
+    keyboard = []
+    if locations:
+        for loc in locations:
+            keyboard.append([InlineKeyboardButton(loc, callback_data=f"choose_location:{loc}")])
+    keyboard.append([InlineKeyboardButton("ЗАГАЛЬНИЙ ЗВІТ", callback_data="choose_location:ЗАГАЛЬНИЙ ЗВІТ")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text("Оберіть точку для звіту:", reply_markup=reply_markup)
     set_state(chat_id, {"stage": "choose_location"})
@@ -342,9 +336,14 @@ def choose_location_callback(update: Update, context: CallbackContext) -> int:
     _, location = query.data.split(":", 1)
     chat_id = query.message.chat.id
     state = get_state(chat_id) or {}
-    state["location"] = location
+    # Якщо обрана кнопка "ЗАГАЛЬНИЙ ЗВІТ", встановлюємо порожній рядок для локації
+    if location == "ЗАГАЛЬНИЙ ЗВІТ":
+        state["location"] = ""
+    else:
+        state["location"] = location
     state["stage"] = "choose_view"
     set_state(chat_id, state)
+    
     keyboard = [
         [InlineKeyboardButton("СТИСЛИЙ", callback_data="choose_view:СТИСЛИЙ")],
         [InlineKeyboardButton("РОЗГОРНУТИЙ", callback_data="choose_view:РОЗГОРНУТИЙ")]
@@ -361,6 +360,7 @@ def choose_view_callback(update: Update, context: CallbackContext) -> int:
     state["viewMode"] = view_mode
     state["stage"] = "choose_period"
     set_state(chat_id, state)
+    
     keyboard = [
         [InlineKeyboardButton("Сьогодні", callback_data="choose_period:Сьогодні")],
         [InlineKeyboardButton("Вчора", callback_data="choose_period:Вчора")],
