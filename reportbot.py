@@ -161,8 +161,8 @@ def process_journal(operation_type: str, start_date: datetime.date, end_date: da
                 if selected_location and row[10].strip() != selected_location:
                     continue
                 material = row[3].strip()
-                weight = float(row[5].replace(",", ".").strip()) if row[5] else 0
-                sum_val = float(row[9].replace(",", ".").strip()) if row[9] else 0
+                weight = float(row[5].replace('\xa0', '').replace(",", ".").strip()) if row[5] else 0
+                sum_val = float(row[9].replace('\xa0', '').replace(",", ".").strip()) if row[9] else 0
                 if material not in result:
                     result[material] = {"weight": 0, "sum": 0}
                 result[material]["weight"] += weight
