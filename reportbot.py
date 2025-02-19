@@ -296,6 +296,8 @@ def generate_pdf_report(params: dict) -> bytes:
 
     # Реєструємо шрифт (NotoSans або DejaVuSans)
     pdfmetrics.registerFont(TTFont("NotoSans", "fonts/NotoSans-Regular.ttf"))
+    # Реєструємо шрифт із жирним накресленням
+    pdfmetrics.registerFont(TTFont("NotoSans-Bold", "fonts/NotoSans-Bold.ttf"))
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
