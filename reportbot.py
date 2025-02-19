@@ -319,7 +319,7 @@ def generate_pdf_report(params: dict) -> bytes:
             ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'NotoSans'),  # Заголовок таблиці
+            ('FONTNAME', (0, 0), (-1, -1), 'NotoSans'),  # Заголовок таблиці
         ])
         table.setStyle(table_style)
         story.append(table)
