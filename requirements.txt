@@ -5,3 +5,4 @@ requests==2.28.1
 google-auth
 reportlab
 pytz
+Pillow
