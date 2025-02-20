@@ -339,15 +339,19 @@ def generate_pdf_report(params: dict) -> bytes:
 
     story = []
 
-    # --- Логотип (зменшено на 20 -> width=120) ---
     try:
-        logo = RLImage("images/logo_black_metal.png", width=120)
-        logo.hAlign = 'LEFT'
-        story.append(logo)
-        story.append(Spacer(1, 4))
-        logger.info("Логотип додано")
-    except Exception as e:
-        logger.error(f"Cannot load logo image: {e}")
+    pil_img = PILImage.open("images/logo_black_metal.png")
+    orig_width, orig_height = pil_img.size
+    desired_width = 120  # бажана ширина
+    # Обчислюємо нову висоту з урахуванням співвідношення сторін
+    new_height = int(desired_width * orig_height / orig_width)
+    logo = RLImage("images/logo_black_metal.png", width=desired_width, height=new_height)
+    logo.hAlign = 'LEFT'
+    story.append(logo)
+    story.append(Spacer(1, 4))
+    logger.info("Логотип додано з правильним співвідношенням сторін")
+except Exception as e:
+    logger.error(f"Cannot load logo image: {e}")
 
     # --- Інфо-рядок з часом за Києвом ---
     kyiv_tz = pytz.timezone("Europe/Kiev")
