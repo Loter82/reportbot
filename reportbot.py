@@ -24,7 +24,7 @@ from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, Update, Chat)
 from telegram.ext import (Updater, CommandHandler, CallbackQueryHandler,
                           MessageHandler, Filters, ConversationHandler, CallbackContext)
 
-# Налаштування логування: виводимо всі повідомлення в консоль
+# Налаштування логування
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,6 +43,7 @@ if not SERVICE_ACCOUNT_JSON:
 user_states = {}
 
 # ---------------------- Функції роботи з Google Таблицею ----------------------
+
 def get_spreadsheet():
     logger.info("Отримання Google Таблиці за ID")
     scopes = ['https://www.googleapis.com/auth/spreadsheets',
@@ -115,6 +116,7 @@ def get_locations():
         return []
 
 # ---------------------- Логіка формування звіту ----------------------
+
 def format_number(num: float) -> str:
     s = "{:,.2f}".format(num)
     return s.replace(",", " ")
@@ -196,6 +198,7 @@ def generate_brief_table_data(aggregated_data: dict, material_mapping: dict):
     table_data = [["Вид", "Вага (кг)", "Сума"]]
     overall_weight = 0
     overall_sum = 0
+
     sorted_kinds = sorted(grouped.items(), key=lambda x: x[1]["sum"], reverse=True)
     for kind, vals in sorted_kinds:
         overall_weight += vals["weight"]
@@ -224,6 +227,7 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
     table_data = [["Тип сировини", "Вага (кг)", "Сума", "Середня ціна за кг"]]
     overall_weight = 0
     overall_sum = 0
+
     kind_subtotals = {}
     for kind, materials in grouped.items():
         subtotal_weight = sum(v["weight"] for v in materials.values())
@@ -317,7 +321,7 @@ def generate_pdf_report(params: dict) -> bytes:
     else:
         if full_month:
             monthNames = ["січень", "лютий", "березень", "квітень", "травня", "червня",
-                          "липень", "серпня", "вересень", "жовтень", "листопад", "грудень"]
+                          "липень", "серпня", "вересень", "жовтня", "листопад", "грудень"]
             docTitle = f"Звіт про закупівлі та продажі: {locationText} за {monthNames[start_date.month - 1]} {start_date.year} року"
         else:
             docTitle = f"Звіт: {locationText} | {start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}"
@@ -335,9 +339,8 @@ def generate_pdf_report(params: dict) -> bytes:
 
     story = []
 
-    # --- Логотип ---
+    # --- Логотип (зменшено на 20 -> width=120) ---
     try:
-        # Зменшено на 20% (width=120) від початкового значення
         logo = RLImage("images/logo_black_metal.png", width=120)
         logo.hAlign = 'LEFT'
         story.append(logo)
@@ -407,6 +410,7 @@ def generate_report_from_params(params: dict, chat_id: int, context: CallbackCon
     send_report_to_telegram(pdf, "Звіт про рух матеріалів", chat_id, context)
 
 # ---------------------- Телеграм-логіка ----------------------
+
 def start_command(update: Update, context: CallbackContext) -> int:
     args = context.args  # Отримуємо аргументи, передані після /start
     logger.info(f"/start викликано з аргументами: {args}")
@@ -420,7 +424,12 @@ def report_command(update: Update, context: CallbackContext) -> int:
     chat_id = update.effective_chat.id
     logger.info(f"/report викликано для chat_id: {chat_id}")
     if not is_user_allowed(chat_id):
+        # Надсилаємо повідомлення адміну, якщо користувач не авторизований
+        admin_chat_id = 130476571
+        unauthorized_message = f"КОРИСТУВАЧ з TG ID {chat_id} намагається отримати доступ до данних звітів."
+        context.bot.send_message(chat_id=admin_chat_id, text=unauthorized_message)
         update.message.reply_text("🚫 Вибачте, у вас немає доступу до генерації звітів.")
+        logger.info(f"Неавторизований доступ від TG ID {chat_id}")
         return ConversationHandler.END
     user_full_name = update.effective_user.full_name if update.effective_user.full_name else update.effective_user.username
     set_state(chat_id, {"stage": "choose_location", "generated_by": user_full_name})
