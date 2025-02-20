@@ -389,8 +389,9 @@ def generate_report_from_params(params: dict, chat_id: int, context: CallbackCon
 # ---------------------- Телеграм-логіка ----------------------
 
 def start_command(update: Update, context: CallbackContext) -> int:
-    args = context.args
+    args = context.args  # отримуємо аргументи, передані після /start
     if args and args[0] == "reports":
+        # Якщо deep link містить параметр "reports", одразу запускаємо логіку звіту
         return report_command(update, context)
     else:
         update.message.reply_text("👋 Вітаємо! Використовуйте команду /report для генерації звіту про рух матеріалів.")
