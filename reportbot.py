@@ -369,7 +369,7 @@ def generate_pdf_report(params: dict) -> bytes:
     # --- Дані звіту ---
     op_types = [
         ("КУПІВЛЯ", "Куплені матеріали"),
-        ("ПРОДАЖ", "Продані матеріали"),
+        ("ПРОДАЖ", "Продані матеріали (Роздріб)"),
         ("ВІДВАНТАЖЕННЯ", "Відвантажені матеріали")
     ]
     material_mapping = get_material_mapping()
@@ -435,7 +435,7 @@ def report_command(update: Update, context: CallbackContext) -> int:
         pass
 
     if not is_user_allowed(chat_id):
-        update.message.reply_text("Вибачте, у вас немає доступу до генерації звітів.")
+        update.message.reply_text("⛔️Вибачте, у вас немає доступу до генерації звітів.")
         return ConversationHandler.END
 
     user_full_name = update.effective_user.full_name if update.effective_user.full_name else update.effective_user.username
@@ -449,7 +449,7 @@ def report_command(update: Update, context: CallbackContext) -> int:
     keyboard.append([InlineKeyboardButton("ЗАГАЛЬНИЙ ЗВІТ", callback_data="choose_location:ЗАГАЛЬНИЙ ЗВІТ")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("Оберіть точку для звіту:", reply_markup=reply_markup)
+    update.message.reply_text("📍Оберіть точку для звіту:", reply_markup=reply_markup)
     return CHOOSING_LOCATION
 
 def choose_location_callback(update: Update, context: CallbackContext) -> int:
@@ -486,7 +486,7 @@ def choose_view_callback(update: Update, context: CallbackContext) -> int:
         [InlineKeyboardButton("Минулий місяць", callback_data="choose_period:Минулий місяць")],
         [InlineKeyboardButton("З - ПО", callback_data="choose_period:З - ПО")]
     ]
-    query.edit_message_text(text="Оберіть період звіту:", reply_markup=InlineKeyboardMarkup(keyboard))
+    query.edit_message_text(text="🗓Оберіть період звіту:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSING_PERIOD
 
 def choose_period_callback(update: Update, context: CallbackContext) -> int:
@@ -499,7 +499,7 @@ def choose_period_callback(update: Update, context: CallbackContext) -> int:
     if period == "З - ПО":
         state["stage"] = "enter_custom_dates"
         set_state(chat_id, state)
-        query.edit_message_text(text="Будь ласка, введіть дату або діапазон дат у форматі dd.MM.yyyy або dd.MM.yyyy-dd.MM.yyyy:")
+        query.edit_message_text(text="🗓Будь ласка, введіть дату або діапазон дат у форматі dd.MM.yyyy або dd.MM.yyyy-dd.MM.yyyy:")
         return ENTERING_CUSTOM_DATES
     else:
         state["stage"] = "completed"
