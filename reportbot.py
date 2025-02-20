@@ -18,8 +18,9 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus.tables import TableStyle
 
-from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, Update,
-                      Chat, BotCommand, BotCommandScopeChat)
+import pytz
+
+from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, Update, Chat)
 from telegram.ext import (Updater, CommandHandler, CallbackQueryHandler,
                           MessageHandler, Filters, ConversationHandler, CallbackContext)
 
@@ -39,13 +40,9 @@ if not SERVICE_ACCOUNT_JSON:
 
 # Розмовні стани
 (CHOOSING_LOCATION, CHOOSING_VIEW, CHOOSING_PERIOD, ENTERING_CUSTOM_DATES) = range(4)
-
-# Глобальний словник для зберігання стану користувачів
 user_states = {}
 
-# -------------------------------------------------------
-# 1. Функції для роботи з Google Таблицею
-# -------------------------------------------------------
+# ---------------------- Функції роботи з Google Таблицею ----------------------
 
 def get_spreadsheet():
     scopes = ['https://www.googleapis.com/auth/spreadsheets',
@@ -76,9 +73,6 @@ def get_state(chat_id):
     return user_states.get(str(chat_id))
 
 def compute_standard_period(period: str):
-    """
-    Повертає start та end у форматі dd.MM.yyyy
-    """
     today = datetime.date.today()
     if period == "Сьогодні":
         start = today
@@ -100,9 +94,6 @@ def compute_standard_period(period: str):
     return {"start": start.strftime("%d.%m.%Y"), "end": end.strftime("%d.%m.%Y")}
 
 def get_locations():
-    """
-    Зчитує локації з аркуша SHOPS
-    """
     try:
         ss = get_spreadsheet()
         shops_sheet = ss.worksheet("SHOPS")
@@ -112,17 +103,11 @@ def get_locations():
         logger.error("Error in get_locations: " + str(e))
         return []
 
-# -------------------------------------------------------
-# 2. Логіка формування звіту
-# -------------------------------------------------------
+# ---------------------- Логіка формування звіту ----------------------
 
 def format_number(num: float) -> str:
-    """
-    Форматує число з двома знаками після коми і розділяє тисячі пробілами.
-    1234.56 -> "1 234.56"
-    """
-    s = "{:,.2f}".format(num)  # -> "1,234.56"
-    return s.replace(",", " ")  # -> "1 234.56"
+    s = "{:,.2f}".format(num)
+    return s.replace(",", " ")
 
 def get_material_mapping():
     try:
@@ -144,9 +129,6 @@ def get_material_mapping():
         return {}
 
 def process_journal(operation_type: str, start_date: datetime.date, end_date: datetime.date, selected_location: str):
-    """
-    Збирає дані з JOURNAL за заданим типом операції, періодом і локацією.
-    """
     try:
         ss = get_spreadsheet()
         journal_sheet = ss.worksheet("JOURNAL")
@@ -274,23 +256,36 @@ def build_table_style(table_data):
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
     ]
-    # Жирний шрифт для підсумкових рядків
     for i, row in enumerate(table_data):
         if row[0].startswith("**Загальний підсумок:") or row[0].strip().startswith("Підсумок"):
             style_cmds.append(('FONTNAME', (0, i), (-1, i), 'NotoSans-Bold'))
     return TableStyle(style_cmds)
 
-def generate_pdf_report(params: dict) -> bytes:
+def log_report(params: dict, chat_id: int):
     """
-    Генерує PDF-звіт, враховуючи випадок, коли start_date == end_date.
-    Якщо це одна дата, використовуємо формат: "Звіт за 19 лютого 2025 року".
+    Записує лог формування звітів у вкладку REPORT_LOG у Google Таблиці.
+    Записує час (за Києвом), chat_id, користувача та параметри звіту (JSON).
     """
+    try:
+        ss = get_spreadsheet()
+        try:
+            log_sheet = ss.worksheet("REPORT_LOG")
+        except Exception:
+            log_sheet = ss.add_worksheet(title="REPORT_LOG", rows="1000", cols="10")
+        kyiv_tz = pytz.timezone("Europe/Kiev")
+        now_kyiv = datetime.datetime.now(kyiv_tz)
+        time_str = now_kyiv.strftime("%d.%m.%Y %H:%M:%S")
+        generated_by = params.get("generated_by", "Невідомий")
+        params_json = json.dumps(params, ensure_ascii=False)
+        log_sheet.append_row([time_str, str(chat_id), generated_by, params_json])
+    except Exception as e:
+        logger.error(f"Error logging report: {e}")
 
+def generate_pdf_report(params: dict) -> bytes:
     # Реєструємо шрифти
     pdfmetrics.registerFont(TTFont("NotoSans", "fonts/NotoSans-Regular.ttf"))
     pdfmetrics.registerFont(TTFont("NotoSans-Bold", "fonts/NotoSans-Bold.ttf"))
 
-    # Парсимо дати
     try:
         start_date = datetime.datetime.strptime(params["startDate"], "%d.%m.%Y").date()
         end_date = datetime.datetime.strptime(params["endDate"], "%d.%m.%Y").date()
@@ -298,66 +293,51 @@ def generate_pdf_report(params: dict) -> bytes:
         logger.error("Error parsing dates: " + str(e))
         start_date = end_date = datetime.date.today()
 
-    # Перевірка, чи весь місяць
     full_month = False
     if start_date.day == 1:
         last_day = calendar.monthrange(start_date.year, start_date.month)[1]
         if end_date.day == last_day and start_date.month == end_date.month and start_date.year == end_date.year:
             full_month = True
 
-    # Формуємо заголовок
     locationText = params.get("location") if params.get("location") else "Загальний"
-    # Якщо однакова дата
     if start_date == end_date and not full_month:
-        # "Звіт за 19 лютого 2025 року"
         monthNames = ["січня", "лютого", "березня", "квітня", "травня", "червня",
                       "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"]
-        day = start_date.day
-        monthName = monthNames[start_date.month - 1]
-        year = start_date.year
-        docTitle = f"Звіт за {day} {monthName} {year} року ({locationText})"
+        docTitle = f"Звіт за {start_date.day} {monthNames[start_date.month - 1]} {start_date.year} року ({locationText})"
     else:
-        # Якщо повний місяць
         if full_month:
             monthNames = ["січень", "лютий", "березень", "квітень", "травень", "червень",
-                          "липень", "серпень", "вересень", "жовтень", "листопад", "грудень"]
-            monthName = monthNames[start_date.month - 1]
-            docTitle = f"Звіт про закупівлі та продажі: {locationText} за {monthName} {start_date.year} року"
+                          "липень", "серпня", "вересень", "жовтень", "листопад", "грудень"]
+            docTitle = f"Звіт про закупівлі та продажі: {locationText} за {monthNames[start_date.month - 1]} {start_date.year} року"
         else:
-            startString = start_date.strftime("%Y-%m-%d")
-            endString = end_date.strftime("%Y-%m-%d")
-            docTitle = f"Звіт: {locationText} | {startString} - {endString}"
+            docTitle = f"Звіт: {locationText} | {start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}"
 
-    # Налаштовуємо документ із невеликими полями
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4,
                             topMargin=20, leftMargin=20, rightMargin=20, bottomMargin=20)
     styles = getSampleStyleSheet()
-
     styles["Normal"].fontName = "NotoSans"
     styles["Title"].fontName = "NotoSans"
     styles["Heading1"].fontName = "NotoSans"
     styles["Heading2"].fontName = "NotoSans"
-
-    # Малий стиль для інфо-рядка
     small_style = ParagraphStyle('Small', parent=styles['Normal'], fontSize=8)
 
     story = []
 
-    # --- Додаємо логотип ---
-    # Припустимо, він у папці "images/" і хочемо зберегти співвідношення сторін.
-    # Якщо встановити лише width=150, а height=None, ReportLab сам спробує зберегти пропорції.
+    # --- Логотип (зменшено на 20% -> width=120) ---
     try:
-        logo = RLImage("images/logo_black_metal.png", width=200)  # height=None => пропорції
+        logo = RLImage("images/logo_black_metal.png", width=120)
         logo.hAlign = 'LEFT'
         story.append(logo)
         story.append(Spacer(1, 4))
     except Exception as e:
         logger.error(f"Cannot load logo image: {e}")
 
-    # --- Інфо-рядок (хто сформував звіт і коли) ---
-    info_text = f"Звіт сформовано користувачем: {params.get('generated_by', 'Невідомий')} | " \
-                f"{datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+    # --- Інфо-рядок з часом за Києвом ---
+    kyiv_tz = pytz.timezone("Europe/Kiev")
+    kyiv_now = datetime.datetime.now(kyiv_tz)
+    time_str = kyiv_now.strftime("%d.%m.%Y %H:%M:%S")
+    info_text = f"Звіт сформовано користувачем: {params.get('generated_by', 'Невідомий')} | {time_str}"
     story.append(Paragraph(info_text, small_style))
     story.append(Spacer(1, 8))
 
@@ -369,30 +349,25 @@ def generate_pdf_report(params: dict) -> bytes:
     # --- Дані звіту ---
     op_types = [
         ("КУПІВЛЯ", "Куплені матеріали"),
-        ("ПРОДАЖ", "Продані матеріали (Роздріб)"),
+        ("ПРОДАЖ", "Продані матеріали (роздріб)"),
         ("ВІДВАНТАЖЕННЯ", "Відвантажені матеріали")
     ]
     material_mapping = get_material_mapping()
-
     for op_code, op_title in op_types:
         story.append(Paragraph(op_title, styles["Heading2"]))
         story.append(Spacer(1, 6))
-
         aggregated_data = process_journal(op_code, start_date, end_date, params.get("location"))
         if not aggregated_data:
             story.append(Paragraph(f"Немає даних для {op_title}", styles["Normal"]))
             story.append(Spacer(1, 12))
             continue
-
         if params.get("viewMode") == "СТИСЛИЙ":
             table_data = generate_brief_table_data(aggregated_data, material_mapping)
         else:
             table_data = generate_detailed_table_data(aggregated_data, material_mapping)
-
         table_style = build_table_style(table_data)
         table = Table(table_data, hAlign="LEFT")
         table.setStyle(table_style)
-
         story.append(table)
         story.append(Spacer(1, 12))
 
@@ -401,55 +376,41 @@ def generate_pdf_report(params: dict) -> bytes:
     buffer.close()
     return pdf
 
-# -------------------------------------------------------
-# 3. Відправка PDF у Telegram
-# -------------------------------------------------------
-
 def send_report_to_telegram(pdf_file, report_title: str, chat_id: int, context: CallbackContext):
     pdf_buffer = BytesIO(pdf_file)
     pdf_buffer.name = "report.pdf"
     context.bot.send_document(chat_id=chat_id, document=pdf_buffer, caption=report_title)
 
 def generate_report_from_params(params: dict, chat_id: int, context: CallbackContext):
+    log_report(params, chat_id)
     pdf = generate_pdf_report(params)
     send_report_to_telegram(pdf, "Звіт про рух матеріалів", chat_id, context)
 
-# -------------------------------------------------------
-# 4. Телеграм-логіка (обробники команд, розмови)
-# -------------------------------------------------------
+# ---------------------- Телеграм-логіка ----------------------
 
 def start_command(update: Update, context: CallbackContext) -> int:
-    """
-    Звичайна команда /start. Якщо хочемо обробляти deep-linking (наприклад "?start=report"),
-    можна тут перевірити context.args або update.message.text.
-    """
-    update.message.reply_text("Вітаємо! Використовуйте команду /report для генерації звіту про рух матеріалів.")
-    return ConversationHandler.END
+    args = context.args
+    if args and args[0] == "reports":
+        return report_command(update, context)
+    else:
+        update.message.reply_text("👋 Вітаємо! Використовуйте команду /report для генерації звіту про рух матеріалів.")
+        return ConversationHandler.END
 
 def report_command(update: Update, context: CallbackContext) -> int:
     chat_id = update.effective_chat.id
-
-    # Якщо це група і хтось виконав /report, треба перевірити is_user_allowed
-    if update.effective_chat.type in [Chat.GROUP, Chat.SUPERGROUP]:
-        # Можна перевірити, чи бот має достатні права, і чи користувач у списку
-        pass
-
     if not is_user_allowed(chat_id):
-        update.message.reply_text("⛔️Вибачте, у вас немає доступу до генерації звітів.")
+        update.message.reply_text("🚫 Вибачте, у вас немає доступу до генерації звітів.")
         return ConversationHandler.END
-
     user_full_name = update.effective_user.full_name if update.effective_user.full_name else update.effective_user.username
     set_state(chat_id, {"stage": "choose_location", "generated_by": user_full_name})
-
     locations = get_locations()
     keyboard = []
     if locations:
         for loc in locations:
             keyboard.append([InlineKeyboardButton(loc, callback_data=f"choose_location:{loc}")])
     keyboard.append([InlineKeyboardButton("ЗАГАЛЬНИЙ ЗВІТ", callback_data="choose_location:ЗАГАЛЬНИЙ ЗВІТ")])
-
     reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("📍Оберіть точку для звіту:", reply_markup=reply_markup)
+    update.message.reply_text("📍 Оберіть точку для звіту:", reply_markup=reply_markup)
     return CHOOSING_LOCATION
 
 def choose_location_callback(update: Update, context: CallbackContext) -> int:
@@ -461,12 +422,11 @@ def choose_location_callback(update: Update, context: CallbackContext) -> int:
     state["location"] = "" if location == "ЗАГАЛЬНИЙ ЗВІТ" else location
     state["stage"] = "choose_view"
     set_state(chat_id, state)
-
     keyboard = [
         [InlineKeyboardButton("СТИСЛИЙ", callback_data="choose_view:СТИСЛИЙ")],
         [InlineKeyboardButton("РОЗГОРНУТИЙ", callback_data="choose_view:РОЗГОРНУТИЙ")]
     ]
-    query.edit_message_text(text="Оберіть режим звіту:", reply_markup=InlineKeyboardMarkup(keyboard))
+    query.edit_message_text(text="🔹 Оберіть режим звіту:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSING_VIEW
 
 def choose_view_callback(update: Update, context: CallbackContext) -> int:
@@ -478,7 +438,6 @@ def choose_view_callback(update: Update, context: CallbackContext) -> int:
     state["viewMode"] = view_mode
     state["stage"] = "choose_period"
     set_state(chat_id, state)
-
     keyboard = [
         [InlineKeyboardButton("Сьогодні", callback_data="choose_period:Сьогодні")],
         [InlineKeyboardButton("Вчора", callback_data="choose_period:Вчора")],
@@ -486,7 +445,7 @@ def choose_view_callback(update: Update, context: CallbackContext) -> int:
         [InlineKeyboardButton("Минулий місяць", callback_data="choose_period:Минулий місяць")],
         [InlineKeyboardButton("З - ПО", callback_data="choose_period:З - ПО")]
     ]
-    query.edit_message_text(text="🗓Оберіть період звіту:", reply_markup=InlineKeyboardMarkup(keyboard))
+    query.edit_message_text(text="🗓️ Оберіть період звіту:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSING_PERIOD
 
 def choose_period_callback(update: Update, context: CallbackContext) -> int:
@@ -499,7 +458,7 @@ def choose_period_callback(update: Update, context: CallbackContext) -> int:
     if period == "З - ПО":
         state["stage"] = "enter_custom_dates"
         set_state(chat_id, state)
-        query.edit_message_text(text="🗓Будь ласка, введіть дату або діапазон дат у форматі dd.MM.yyyy або dd.MM.yyyy-dd.MM.yyyy:")
+        query.edit_message_text(text="✍️ Введіть дату або діапазон дат у форматі dd.MM.yyyy або dd.MM.yyyy-dd.MM.yyyy:")
         return ENTERING_CUSTOM_DATES
     else:
         state["stage"] = "completed"
@@ -507,7 +466,7 @@ def choose_period_callback(update: Update, context: CallbackContext) -> int:
         state["startDate"] = computed["start"]
         state["endDate"] = computed["end"]
         set_state(chat_id, state)
-        query.edit_message_text(text="Ваші параметри збережено. Звіт формується, будь ласка, очікуйте.")
+        query.edit_message_text(text="✅ Ваші параметри збережено. Звіт формується, будь ласка, очікуйте.")
         generate_report_from_params(state, chat_id, context)
         return ConversationHandler.END
 
@@ -516,7 +475,7 @@ def custom_dates(update: Update, context: CallbackContext) -> int:
     text = update.message.text
     parts = text.split("-")
     if len(parts) not in [1, 2]:
-        update.message.reply_text("Невірний формат дат. Будь ласка, введіть у форматі dd.MM.yyyy або dd.MM.yyyy-dd.MM.yyyy")
+        update.message.reply_text("❗ Невірний формат дат. Введіть у форматі dd.MM.yyyy або dd.MM.yyyy-dd.MM.yyyy")
         return ENTERING_CUSTOM_DATES
     state = get_state(chat_id) or {}
     state["periodType"] = "З - ПО"
@@ -524,47 +483,35 @@ def custom_dates(update: Update, context: CallbackContext) -> int:
     state["endDate"] = parts[1].strip() if len(parts) == 2 else parts[0].strip()
     state["stage"] = "completed"
     set_state(chat_id, state)
-    update.message.reply_text("Ваші параметри збережено. Звіт формується, будь ласка, очікуйте.")
+    update.message.reply_text("✅ Ваші параметри збережено. Звіт формується, будь ласка, очікуйте.")
     generate_report_from_params(state, chat_id, context)
     return ConversationHandler.END
 
 def cancel(update: Update, context: CallbackContext) -> int:
-    update.message.reply_text("Операцію скасовано.")
+    update.message.reply_text("🚫 Операцію скасовано.")
     return ConversationHandler.END
 
-# -------------------------------------------------------
-# 5. Кнопка "ЗВІТИ" у групі -> відкриття приватного чату
-# -------------------------------------------------------
+# ---------------------- Кнопка "ЗВІТИ" для груп ----------------------
 
 def group_reports_button(update: Update, context: CallbackContext):
-    """
-    Ця функція надсилає в групу повідомлення з кнопкою "ЗВІТИ",
-    яка веде у приватний чат із ботом (deep-link).
-    Користувач мусить натиснути, щоб перейти в приватний чат.
-    """
     if update.effective_chat.type not in [Chat.GROUP, Chat.SUPERGROUP]:
-        update.message.reply_text("Ця команда призначена для групи.")
+        update.message.reply_text("Ця команда доступна лише в групах.")
         return
-
-    bot_username = context.bot.username  # Наприклад, "MyReportBot"
-    # Deep-link (користувач відкриє приватний чат із ботом із параметром start=reports)
+    bot_username = context.bot.username
     deep_link_url = f"https://t.me/{bot_username}?start=reports"
-
     keyboard = [[InlineKeyboardButton("ЗВІТИ", url=deep_link_url)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text(
-        "Натисніть «ЗВІТИ», щоб відкрити приватний чат з ботом і сформувати звіт:",
-        reply_markup=reply_markup
-    )
+    update.message.reply_text("👉 Натисніть «ЗВІТИ», щоб відкрити приватний чат з ботом для формування звіту.", reply_markup=reply_markup)
+
+# ---------------------- Головна функція ----------------------
 
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Створимо команду /groupreports, яку можна викликати в групі,
-    # щоб бот надіслав кнопку "ЗВІТИ"
     dp.add_handler(CommandHandler("groupreports", group_reports_button))
-
+    dp.add_handler(CommandHandler("start", start_command))
+    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("report", report_command)],
         states={
@@ -576,10 +523,9 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     )
 
-    dp.add_handler(CommandHandler("start", start_command))
     dp.add_handler(conv_handler)
-
     updater.start_polling()
+    logger.info("🤖 Bot started. Listening for commands...")
     updater.idle()
 
 if __name__ == '__main__':
