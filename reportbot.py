@@ -348,7 +348,7 @@ def generate_pdf_report(params: dict) -> bytes:
     # Припустимо, він у папці "images/" і хочемо зберегти співвідношення сторін.
     # Якщо встановити лише width=150, а height=None, ReportLab сам спробує зберегти пропорції.
     try:
-        logo = RLImage("images/logo_black_metal.png", width=150)  # height=None => пропорції
+        logo = RLImage("images/logo_black_metal.png", width=200)  # height=None => пропорції
         logo.hAlign = 'LEFT'
         story.append(logo)
         story.append(Spacer(1, 4))
