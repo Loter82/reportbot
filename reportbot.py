@@ -10,8 +10,8 @@ from google.oauth2.service_account import Credentials
 
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Table, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
@@ -96,15 +96,9 @@ def get_locations():
         logger.error("Error in get_locations: " + str(e))
         return []
 
-# ------------------ Логіка формування звіту ------------------
-
 def format_number(num: float) -> str:
-    """
-    Форматує число з двома знаками після коми та тисячними розрядами.
-    Приклад: 1234.56 -> "1 234.56"
-    """
-    s = "{:,.2f}".format(num)  # стандартне форматування: 1,234.56
-    return s.replace(",", " ")  # замінюємо кому на пробіл => 1 234.56
+    s = "{:,.2f}".format(num)
+    return s.replace(",", " ")
 
 def get_material_mapping():
     try:
@@ -115,7 +109,6 @@ def get_material_mapping():
         for row in data[1:]:
             if row and row[0]:
                 material = row[0].strip()
-                # Видаляємо нерозривні пробіли, якщо є
                 if len(row) > 2 and row[2]:
                     kind = row[2].replace('\xa0', '').strip()
                 else:
@@ -190,7 +183,6 @@ def generate_brief_table_data(aggregated_data: dict, material_mapping: dict):
             format_number(vals["weight"]),
             format_number(vals["sum"])
         ])
-    # Підсумок
     table_data.append([
         "**Загальний підсумок:**",
         format_number(overall_weight),
@@ -231,7 +223,6 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
                 format_number(sum_val),
                 format_number(avg)
             ])
-        # Підсумок по виду
         table_data.append([
             f"   Підсумок ({kind}):",
             format_number(subtotal["weight"]),
@@ -241,7 +232,6 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
         overall_weight += subtotal["weight"]
         overall_sum += subtotal["sum"]
 
-    # Загальний підсумок
     table_data.append([
         "**Загальний підсумок:**",
         format_number(overall_weight),
@@ -251,25 +241,23 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
     return table_data
 
 def build_table_style(table_data):
-    """
-    Формує стиль таблиці, де всі клітинки відображаються шрифтом NotoSans,
-    а підсумкові рядки (ті, що містять "Загальний підсумок" або "Підсумок (чогось)")
-    виділяються жирним.
-    """
     style_cmds = [
         ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
         ('FONTNAME', (0, 0), (-1, -1), 'NotoSans'),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
     ]
-    # Перебираємо всі рядки, шукаємо ключові слова
+    # Жирний шрифт для підсумкових рядків
     for i, row in enumerate(table_data):
         if row[0].startswith("**Загальний підсумок:") or row[0].strip().startswith("Підсумок"):
-            # Зробимо жирним
             style_cmds.append(('FONTNAME', (0, i), (-1, i), 'NotoSans-Bold'))
     return TableStyle(style_cmds)
 
 def generate_pdf_report(params: dict) -> bytes:
+    # Реєструємо шрифти
+    pdfmetrics.registerFont(TTFont("NotoSans", "fonts/NotoSans-Regular.ttf"))
+    pdfmetrics.registerFont(TTFont("NotoSans-Bold", "fonts/NotoSans-Bold.ttf"))
+
     try:
         start_date = datetime.datetime.strptime(params["startDate"], "%d.%m.%Y").date()
         end_date = datetime.datetime.strptime(params["endDate"], "%d.%m.%Y").date()
@@ -294,28 +282,43 @@ def generate_pdf_report(params: dict) -> bytes:
         endString = end_date.strftime("%Y-%m-%d")
         docTitle = f"Звіт: {locationText} | {startString} - {endString}"
 
-    # Реєструємо шрифт (NotoSans або DejaVuSans)
-    pdfmetrics.registerFont(TTFont("NotoSans", "fonts/NotoSans-Regular.ttf"))
-    # Реєструємо шрифт із жирним накресленням
-    pdfmetrics.registerFont(TTFont("NotoSans-Bold", "fonts/NotoSans-Bold.ttf"))
-
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
 
-    # Використовуємо шрифт NotoSans у стилях
     styles["Normal"].fontName = "NotoSans"
     styles["Title"].fontName = "NotoSans"
     styles["Heading1"].fontName = "NotoSans"
     styles["Heading2"].fontName = "NotoSans"
 
+    # Малий стиль для інфо-рядка
+    small_style = ParagraphStyle('Small', parent=styles['Normal'], fontSize=8)
+
     story = []
 
-    # Заголовок
+    # --- Додаємо зображення (логотип) ---
+    # Припустимо, воно лежить у папці "images/"
+    # Задаємо бажані width/height, або залишаємо за замовчуванням
+    try:
+        logo = Image("images/logo_black_metal.png", width=200, height=60)  
+        logo.hAlign = 'LEFT'  # Можна 'CENTER', якщо треба по центру
+        story.append(logo)
+        story.append(Spacer(1, 6))
+    except Exception as e:
+        logger.error(f"Cannot load logo image: {e}")
+
+    # --- Інфо-рядок (хто сформував звіт і коли) ---
+    info_text = f"Звіт сформовано користувачем: {params.get('generated_by', 'Невідомий')} | " \
+                f"{datetime.datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+    story.append(Paragraph(info_text, small_style))
+    story.append(Spacer(1, 6))
+
+    # --- Заголовок ---
     title_paragraph = Paragraph(docTitle, styles["Title"])
     story.append(title_paragraph)
     story.append(Spacer(1, 12))
 
+    # --- Дані звіту ---
     op_types = [
         ("КУПІВЛЯ", "Куплені матеріали"),
         ("ПРОДАЖ", "Продані матеріали"),
@@ -338,7 +341,6 @@ def generate_pdf_report(params: dict) -> bytes:
         else:
             table_data = generate_detailed_table_data(aggregated_data, material_mapping)
 
-        # Формуємо стиль для таблиці
         table_style = build_table_style(table_data)
         table = Table(table_data, hAlign="LEFT")
         table.setStyle(table_style)
@@ -360,8 +362,6 @@ def generate_report_from_params(params: dict, chat_id: int, context: CallbackCon
     pdf = generate_pdf_report(params)
     send_report_to_telegram(pdf, "Звіт про рух матеріалів", chat_id, context)
 
-# ------------------ Телеграм-логіка ------------------
-
 def start_command(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("Вітаємо! Використовуйте команду /report для генерації звіту про рух матеріалів.")
     return ConversationHandler.END
@@ -372,6 +372,9 @@ def report_command(update: Update, context: CallbackContext) -> int:
         update.message.reply_text("Вибачте, у вас немає доступу до генерації звітів.")
         return ConversationHandler.END
 
+    user_full_name = update.effective_user.full_name if update.effective_user.full_name else update.effective_user.username
+    set_state(chat_id, {"stage": "choose_location", "generated_by": user_full_name})
+
     locations = get_locations()
     keyboard = []
     if locations:
@@ -381,7 +384,6 @@ def report_command(update: Update, context: CallbackContext) -> int:
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text("Оберіть точку для звіту:", reply_markup=reply_markup)
-    set_state(chat_id, {"stage": "choose_location"})
     return CHOOSING_LOCATION
 
 def choose_location_callback(update: Update, context: CallbackContext) -> int:
@@ -390,10 +392,7 @@ def choose_location_callback(update: Update, context: CallbackContext) -> int:
     _, location = query.data.split(":", 1)
     chat_id = query.message.chat.id
     state = get_state(chat_id) or {}
-    if location == "ЗАГАЛЬНИЙ ЗВІТ":
-        state["location"] = ""
-    else:
-        state["location"] = location
+    state["location"] = "" if location == "ЗАГАЛЬНИЙ ЗВІТ" else location
     state["stage"] = "choose_view"
     set_state(chat_id, state)
 
