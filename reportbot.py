@@ -24,7 +24,7 @@ from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, Update, Chat)
 from telegram.ext import (Updater, CommandHandler, CallbackQueryHandler,
                           MessageHandler, Filters, ConversationHandler, CallbackContext)
 
-# Налаштування логування
+# Налаштування логування: виводимо всі повідомлення в консоль
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,8 +43,8 @@ if not SERVICE_ACCOUNT_JSON:
 user_states = {}
 
 # ---------------------- Функції роботи з Google Таблицею ----------------------
-
 def get_spreadsheet():
+    logger.info("Отримання Google Таблиці за ID")
     scopes = ['https://www.googleapis.com/auth/spreadsheets',
               'https://www.googleapis.com/auth/drive']
     service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
@@ -54,6 +54,7 @@ def get_spreadsheet():
 
 def is_user_allowed(chat_id):
     try:
+        logger.info(f"Перевірка прав доступу для chat_id: {chat_id}")
         ss = get_spreadsheet()
         users_sheet = ss.worksheet("USERS")
         data = users_sheet.get_all_values()
@@ -61,16 +62,21 @@ def is_user_allowed(chat_id):
             user_id = row[2].strip() if row[2] else ""
             permission = row[6].strip().upper() if row[6] else ""
             if user_id == str(chat_id) and permission == "REPORT":
+                logger.info(f"Доступ дозволено для chat_id: {chat_id}")
                 return True
     except Exception as e:
         logger.error("Error in is_user_allowed: " + str(e))
+    logger.info(f"Доступ заборонено для chat_id: {chat_id}")
     return False
 
 def set_state(chat_id, state):
     user_states[str(chat_id)] = state
+    logger.info(f"Стан збережено для {chat_id}: {state}")
 
 def get_state(chat_id):
-    return user_states.get(str(chat_id))
+    state = user_states.get(str(chat_id))
+    logger.info(f"Отримано стан для {chat_id}: {state}")
+    return state
 
 def compute_standard_period(period: str):
     today = datetime.date.today()
@@ -91,26 +97,31 @@ def compute_standard_period(period: str):
     else:
         start = today
         end = today
-    return {"start": start.strftime("%d.%m.%Y"), "end": end.strftime("%d.%m.%Y")}
+    period_dict = {"start": start.strftime("%d.%m.%Y"), "end": end.strftime("%d.%m.%Y")}
+    logger.info(f"Обчислено період {period}: {period_dict}")
+    return period_dict
 
 def get_locations():
     try:
+        logger.info("Зчитування локацій з аркуша SHOPS")
         ss = get_spreadsheet()
         shops_sheet = ss.worksheet("SHOPS")
         values = shops_sheet.col_values(1)
-        return values[1:] if len(values) > 1 else []
+        locations = values[1:] if len(values) > 1 else []
+        logger.info(f"Отримано локації: {locations}")
+        return locations
     except Exception as e:
         logger.error("Error in get_locations: " + str(e))
         return []
 
 # ---------------------- Логіка формування звіту ----------------------
-
 def format_number(num: float) -> str:
     s = "{:,.2f}".format(num)
     return s.replace(",", " ")
 
 def get_material_mapping():
     try:
+        logger.info("Зчитування мапи матеріалів з аркуша МАТЕРІАЛИ")
         ss = get_spreadsheet()
         mat_sheet = ss.worksheet("МАТЕРІАЛИ")
         data = mat_sheet.get_all_values()
@@ -123,6 +134,7 @@ def get_material_mapping():
                 else:
                     kind = "Інше"
                 mapping[material] = kind
+        logger.info(f"Отримано мапу матеріалів: {mapping}")
         return mapping
     except Exception as e:
         logger.error("Error in get_material_mapping: " + str(e))
@@ -130,6 +142,7 @@ def get_material_mapping():
 
 def process_journal(operation_type: str, start_date: datetime.date, end_date: datetime.date, selected_location: str):
     try:
+        logger.info(f"Обробка журналу для операції: {operation_type} за період {start_date} - {end_date}")
         ss = get_spreadsheet()
         journal_sheet = ss.worksheet("JOURNAL")
         data = journal_sheet.get_all_values()
@@ -165,6 +178,7 @@ def process_journal(operation_type: str, start_date: datetime.date, end_date: da
             except Exception as e:
                 logger.error("Error processing row in JOURNAL: " + str(e))
                 continue
+        logger.info(f"Оброблено дані з JOURNAL: {result}")
         return result
     except Exception as e:
         logger.error("Error in process_journal: " + str(e))
@@ -182,7 +196,6 @@ def generate_brief_table_data(aggregated_data: dict, material_mapping: dict):
     table_data = [["Вид", "Вага (кг)", "Сума"]]
     overall_weight = 0
     overall_sum = 0
-
     sorted_kinds = sorted(grouped.items(), key=lambda x: x[1]["sum"], reverse=True)
     for kind, vals in sorted_kinds:
         overall_weight += vals["weight"]
@@ -197,6 +210,7 @@ def generate_brief_table_data(aggregated_data: dict, material_mapping: dict):
         format_number(overall_weight),
         format_number(overall_sum)
     ])
+    logger.info("Сформовано стислий режим таблиці")
     return table_data
 
 def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
@@ -210,13 +224,11 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
     table_data = [["Тип сировини", "Вага (кг)", "Сума", "Середня ціна за кг"]]
     overall_weight = 0
     overall_sum = 0
-
     kind_subtotals = {}
     for kind, materials in grouped.items():
         subtotal_weight = sum(v["weight"] for v in materials.values())
         subtotal_sum = sum(v["sum"] for v in materials.values())
         kind_subtotals[kind] = {"weight": subtotal_weight, "sum": subtotal_sum}
-
     sorted_kinds = sorted(kind_subtotals.items(), key=lambda x: x[1]["sum"], reverse=True)
     for kind, subtotal in sorted_kinds:
         table_data.append([f"Вид: {kind}", "", "", ""])
@@ -240,13 +252,13 @@ def generate_detailed_table_data(aggregated_data: dict, material_mapping: dict):
         ])
         overall_weight += subtotal["weight"]
         overall_sum += subtotal["sum"]
-
     table_data.append([
         "**Загальний підсумок:**",
         format_number(overall_weight),
         format_number(overall_sum),
         ""
     ])
+    logger.info("Сформовано детальний режим таблиці")
     return table_data
 
 def build_table_style(table_data):
@@ -262,11 +274,8 @@ def build_table_style(table_data):
     return TableStyle(style_cmds)
 
 def log_report(params: dict, chat_id: int):
-    """
-    Записує лог формування звітів у вкладку REPORT_LOG у Google Таблиці.
-    Записує час (за Києвом), chat_id, користувача та параметри звіту (JSON).
-    """
     try:
+        logger.info("Запис логування звіту в REPORT_LOG")
         ss = get_spreadsheet()
         try:
             log_sheet = ss.worksheet("REPORT_LOG")
@@ -278,11 +287,12 @@ def log_report(params: dict, chat_id: int):
         generated_by = params.get("generated_by", "Невідомий")
         params_json = json.dumps(params, ensure_ascii=False)
         log_sheet.append_row([time_str, str(chat_id), generated_by, params_json])
+        logger.info("Логування звіту записано")
     except Exception as e:
         logger.error(f"Error logging report: {e}")
 
 def generate_pdf_report(params: dict) -> bytes:
-    # Реєструємо шрифти
+    logger.info("Початок генерації PDF звіту")
     pdfmetrics.registerFont(TTFont("NotoSans", "fonts/NotoSans-Regular.ttf"))
     pdfmetrics.registerFont(TTFont("NotoSans-Bold", "fonts/NotoSans-Bold.ttf"))
 
@@ -306,11 +316,12 @@ def generate_pdf_report(params: dict) -> bytes:
         docTitle = f"Звіт за {start_date.day} {monthNames[start_date.month - 1]} {start_date.year} року ({locationText})"
     else:
         if full_month:
-            monthNames = ["січень", "лютий", "березень", "квітень", "травень", "червень",
+            monthNames = ["січень", "лютий", "березень", "квітень", "травня", "червня",
                           "липень", "серпня", "вересень", "жовтень", "листопад", "грудень"]
             docTitle = f"Звіт про закупівлі та продажі: {locationText} за {monthNames[start_date.month - 1]} {start_date.year} року"
         else:
             docTitle = f"Звіт: {locationText} | {start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}"
+    logger.info(f"Заголовок документа: {docTitle}")
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4,
@@ -324,12 +335,14 @@ def generate_pdf_report(params: dict) -> bytes:
 
     story = []
 
-    # --- Логотип  ---
+    # --- Логотип ---
     try:
-        logo = RLImage("images/logo_black_metal.png", width=160)
+        # Зменшено на 20% (width=120) від початкового значення
+        logo = RLImage("images/logo_black_metal.png", width=120)
         logo.hAlign = 'LEFT'
         story.append(logo)
         story.append(Spacer(1, 4))
+        logger.info("Логотип додано")
     except Exception as e:
         logger.error(f"Cannot load logo image: {e}")
 
@@ -340,11 +353,13 @@ def generate_pdf_report(params: dict) -> bytes:
     info_text = f"Звіт сформовано користувачем: {params.get('generated_by', 'Невідомий')} | {time_str}"
     story.append(Paragraph(info_text, small_style))
     story.append(Spacer(1, 8))
+    logger.info("Інфо-рядок додано")
 
     # --- Заголовок ---
     title_paragraph = Paragraph(docTitle, styles["Title"])
     story.append(title_paragraph)
     story.append(Spacer(1, 12))
+    logger.info("Заголовок додано")
 
     # --- Дані звіту ---
     op_types = [
@@ -370,41 +385,46 @@ def generate_pdf_report(params: dict) -> bytes:
         table.setStyle(table_style)
         story.append(table)
         story.append(Spacer(1, 12))
+        logger.info(f"Додано дані для операції {op_title}")
 
     doc.build(story)
     pdf = buffer.getvalue()
     buffer.close()
+    logger.info("PDF звіт сформовано")
     return pdf
 
 def send_report_to_telegram(pdf_file, report_title: str, chat_id: int, context: CallbackContext):
+    logger.info(f"Надсилання звіту користувачу {chat_id}")
     pdf_buffer = BytesIO(pdf_file)
     pdf_buffer.name = "report.pdf"
     context.bot.send_document(chat_id=chat_id, document=pdf_buffer, caption=report_title)
+    logger.info("Звіт надіслано")
 
 def generate_report_from_params(params: dict, chat_id: int, context: CallbackContext):
+    logger.info(f"Генерація звіту для chat_id {chat_id} з параметрами: {json.dumps(params, ensure_ascii=False)}")
     log_report(params, chat_id)
     pdf = generate_pdf_report(params)
     send_report_to_telegram(pdf, "Звіт про рух матеріалів", chat_id, context)
 
 # ---------------------- Телеграм-логіка ----------------------
-
 def start_command(update: Update, context: CallbackContext) -> int:
     args = context.args  # Отримуємо аргументи, передані після /start
+    logger.info(f"/start викликано з аргументами: {args}")
     if args and args[0] == "report":
-        # Якщо deep link містить параметр "report", одразу запускаємо логіку формування звіту
         return report_command(update, context)
     else:
         update.message.reply_text("👋 Вітаємо! Використовуйте команду /report для генерації звіту про рух матеріалів.")
         return ConversationHandler.END
 
-
 def report_command(update: Update, context: CallbackContext) -> int:
     chat_id = update.effective_chat.id
+    logger.info(f"/report викликано для chat_id: {chat_id}")
     if not is_user_allowed(chat_id):
         update.message.reply_text("🚫 Вибачте, у вас немає доступу до генерації звітів.")
         return ConversationHandler.END
     user_full_name = update.effective_user.full_name if update.effective_user.full_name else update.effective_user.username
     set_state(chat_id, {"stage": "choose_location", "generated_by": user_full_name})
+    logger.info(f"Користувач {user_full_name} починає формувати звіт")
     locations = get_locations()
     keyboard = []
     if locations:
@@ -424,6 +444,7 @@ def choose_location_callback(update: Update, context: CallbackContext) -> int:
     state["location"] = "" if location == "ЗАГАЛЬНИЙ ЗВІТ" else location
     state["stage"] = "choose_view"
     set_state(chat_id, state)
+    logger.info(f"Вибір локації: {state['location']} для chat_id: {chat_id}")
     keyboard = [
         [InlineKeyboardButton("СТИСЛИЙ", callback_data="choose_view:СТИСЛИЙ")],
         [InlineKeyboardButton("РОЗГОРНУТИЙ", callback_data="choose_view:РОЗГОРНУТИЙ")]
@@ -440,6 +461,7 @@ def choose_view_callback(update: Update, context: CallbackContext) -> int:
     state["viewMode"] = view_mode
     state["stage"] = "choose_period"
     set_state(chat_id, state)
+    logger.info(f"Вибір режиму: {view_mode} для chat_id: {chat_id}")
     keyboard = [
         [InlineKeyboardButton("Сьогодні", callback_data="choose_period:Сьогодні")],
         [InlineKeyboardButton("Вчора", callback_data="choose_period:Вчора")],
@@ -457,6 +479,7 @@ def choose_period_callback(update: Update, context: CallbackContext) -> int:
     chat_id = query.message.chat.id
     state = get_state(chat_id) or {}
     state["periodType"] = period
+    logger.info(f"Вибір періоду: {period} для chat_id: {chat_id}")
     if period == "З - ПО":
         state["stage"] = "enter_custom_dates"
         set_state(chat_id, state)
@@ -485,6 +508,7 @@ def custom_dates(update: Update, context: CallbackContext) -> int:
     state["endDate"] = parts[1].strip() if len(parts) == 2 else parts[0].strip()
     state["stage"] = "completed"
     set_state(chat_id, state)
+    logger.info(f"Введено кастомний період для chat_id {chat_id}: {state['startDate']} - {state['endDate']}")
     update.message.reply_text("✅ Ваші параметри збережено. Звіт формується, будь ласка, очікуйте.")
     generate_report_from_params(state, chat_id, context)
     return ConversationHandler.END
@@ -494,20 +518,18 @@ def cancel(update: Update, context: CallbackContext) -> int:
     return ConversationHandler.END
 
 # ---------------------- Кнопка "ЗВІТИ" для груп ----------------------
-
 def group_reports_button(update: Update, context: CallbackContext):
     if update.effective_chat.type not in [Chat.GROUP, Chat.SUPERGROUP]:
         update.message.reply_text("Ця команда доступна лише в групах.")
         return
     bot_username = context.bot.username  # Наприклад, "MyReportBot"
-    # Використовуємо параметр "report"
     deep_link_url = f"https://t.me/{bot_username}?start=report"
     keyboard = [[InlineKeyboardButton("ЗВІТИ", url=deep_link_url)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    logger.info("Надсилання кнопки ЗВІТИ в групі")
     update.message.reply_text("👉 Натисніть «ЗВІТИ», щоб відкрити приватний чат з ботом та розпочати формування звіту.", reply_markup=reply_markup)
 
 # ---------------------- Головна функція ----------------------
-
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
