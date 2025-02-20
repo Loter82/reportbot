@@ -324,9 +324,9 @@ def generate_pdf_report(params: dict) -> bytes:
 
     story = []
 
-    # --- Логотип (зменшено на 20% -> width=120) ---
+    # --- Логотип  ---
     try:
-        logo = RLImage("images/logo_black_metal.png", width=120)
+        logo = RLImage("images/logo_black_metal.png", width=160)
         logo.hAlign = 'LEFT'
         story.append(logo)
         story.append(Spacer(1, 4))
@@ -390,13 +390,13 @@ def generate_report_from_params(params: dict, chat_id: int, context: CallbackCon
 
 def start_command(update: Update, context: CallbackContext) -> int:
     args = context.args  # Отримуємо аргументи, передані після /start
-    # Якщо deep‑лінк містить "reports" або якщо чат приватний і вже є стан (тобто, користувач переходив з групи),
-    # одразу запускаємо логіку звіту.
-    if (args and args[0] == "reports") or (update.effective_chat.type == 'private' and get_state(update.effective_chat.id)):
+    if args and args[0] == "report":
+        # Якщо deep link містить параметр "report", одразу запускаємо логіку формування звіту
         return report_command(update, context)
     else:
         update.message.reply_text("👋 Вітаємо! Використовуйте команду /report для генерації звіту про рух матеріалів.")
         return ConversationHandler.END
+
 
 def report_command(update: Update, context: CallbackContext) -> int:
     chat_id = update.effective_chat.id
@@ -499,11 +499,12 @@ def group_reports_button(update: Update, context: CallbackContext):
     if update.effective_chat.type not in [Chat.GROUP, Chat.SUPERGROUP]:
         update.message.reply_text("Ця команда доступна лише в групах.")
         return
-    bot_username = context.bot.username
-    deep_link_url = f"https://t.me/{bot_username}?start=reports"
+    bot_username = context.bot.username  # Наприклад, "MyReportBot"
+    # Використовуємо параметр "report"
+    deep_link_url = f"https://t.me/{bot_username}?start=report"
     keyboard = [[InlineKeyboardButton("ЗВІТИ", url=deep_link_url)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("👉 Натисніть «ЗВІТИ», щоб відкрити приватний чат з ботом для формування звіту.", reply_markup=reply_markup)
+    update.message.reply_text("👉 Натисніть «ЗВІТИ», щоб відкрити приватний чат з ботом та розпочати формування звіту.", reply_markup=reply_markup)
 
 # ---------------------- Головна функція ----------------------
 
